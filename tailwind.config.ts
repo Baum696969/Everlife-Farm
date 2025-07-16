@@ -61,7 +61,24 @@ export default {
 					'accent-foreground': 'hsl(var(--sidebar-accent-foreground))',
 					border: 'hsl(var(--sidebar-border))',
 					ring: 'hsl(var(--sidebar-ring))'
+				},
+				farm: {
+					money: 'hsl(var(--farm-money))',
+					field: 'hsl(var(--farm-field))',
+					'field-border': 'hsl(var(--farm-field-border))',
+					locked: 'hsl(var(--farm-locked))',
+					progress: 'hsl(var(--farm-progress))',
+					notification: 'hsl(var(--farm-notification))'
 				}
+			},
+			spacing: {
+				'touch': 'var(--touch-target)',
+				'header': 'var(--header-height)',
+				'bottom-bar': 'var(--bottom-bar-height)'
+			},
+			backgroundImage: {
+				'gradient-sky': 'var(--gradient-sky)',
+				'gradient-progress': 'var(--gradient-progress)'
 			},
 			borderRadius: {
 				lg: 'var(--radius)',

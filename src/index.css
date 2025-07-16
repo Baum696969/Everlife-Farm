@@ -2,41 +2,57 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
-All colors MUST be HSL.
-*/
+/* Farm Clicker Game Design System - Mobile Optimized */
 
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
+    /* Farm Game Colors */
+    --background: 195 53% 79%; /* Sky blue */
+    --foreground: 120 25% 15%; /* Dark forest green */
 
     --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
+    --card-foreground: 120 25% 15%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
+    --popover-foreground: 120 25% 15%;
 
-    --primary: 222.2 47.4% 11.2%;
-    --primary-foreground: 210 40% 98%;
+    --primary: 120 60% 35%; /* Farm green */
+    --primary-foreground: 0 0% 100%;
 
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
+    --secondary: 39 100% 50%; /* Orange for actions */
+    --secondary-foreground: 0 0% 100%;
 
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
+    --muted: 0 0% 85%;
+    --muted-foreground: 0 0% 40%;
 
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
+    --accent: 25 76% 31%; /* Soil brown */
+    --accent-foreground: 0 0% 100%;
 
     --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
+    --destructive-foreground: 0 0% 100%;
 
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 222.2 84% 4.9%;
+    --border: 25 50% 40%;
+    --input: 0 0% 90%;
+    --ring: 120 60% 35%;
 
-    --radius: 0.5rem;
+    --radius: 0.75rem;
+    
+    /* Farm Game Specific Colors */
+    --farm-money: 120 100% 25%; /* Money green */
+    --farm-field: 25 76% 31%; /* Soil brown */
+    --farm-field-border: 25 76% 20%; /* Darker soil */
+    --farm-locked: 0 0% 40%; /* Gray for locked */
+    --farm-progress: 120 60% 50%; /* Progress green */
+    --farm-notification: 120 60% 35%; /* Success green */
+    
+    /* Gradients */
+    --gradient-sky: linear-gradient(135deg, hsl(195 53% 79%) 0%, hsl(120 60% 70%) 100%);
+    --gradient-progress: linear-gradient(45deg, hsl(120 60% 35%), hsl(120 60% 50%));
+    
+    /* Mobile-specific */
+    --touch-target: 44px;
+    --header-height: 70px;
+    --bottom-bar-height: 80px;
 
     --sidebar-background: 0 0% 98%;
 
@@ -101,5 +117,14 @@ All colors MUST be HSL.
 
   body {
     @apply bg-background text-foreground;
+    font-family: 'Comic Sans MS', cursive, sans-serif;
+    background: var(--gradient-sky);
+    min-height: 100vh;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+    user-select: none;
+    overflow-x: hidden;
   }
 }
