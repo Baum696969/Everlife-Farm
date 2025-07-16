@@ -61,7 +61,98 @@ export default function FarmGame() {
   const [shopModal, setShopModal] = useState(false);
   const [fieldShopModal, setFieldShopModal] = useState(false);
   const [inventoryModal, setInventoryModal] = useState(false);
+  const [harvestedInventoryModal, setHarvestedInventoryModal] = useState(false);
+  const [settingsModal, setSettingsModal] = useState(false);
   const [plantSelectionModal, setPlatSelectionModal] = useState<{show: boolean, fieldIndex: number}>({show: false, fieldIndex: -1});
+  const [musicEnabled, setMusicEnabled] = useState(false);
+  const [harvestedInventory, setHarvestedInventory] = useState<Record<string, number>>({});
+
+  // Sound system
+  const playSound = useCallback((type: 'click' | 'grow' | 'buy' | 'harvest' | 'plant' | 'tractor') => {
+    const sounds: Record<string, { freq: number[], duration: number }> = {
+      click: { freq: [800], duration: 100 },
+      grow: { freq: [400, 600, 800], duration: 300 },
+      buy: { freq: [600, 800, 1000], duration: 200 },
+      harvest: { freq: [1000, 800, 600], duration: 400 },
+      plant: { freq: [300, 500], duration: 250 },
+      tractor: { freq: [150, 200, 180], duration: 500 }
+    };
+
+    const sound = sounds[type];
+    if (!sound) return;
+
+    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+    sound.freq.forEach((freq, i) => {
+      const oscillator = audioContext.createOscillator();
+      const gainNode = audioContext.createGain();
+      
+      oscillator.connect(gainNode);
+      gainNode.connect(audioContext.destination);
+      
+      oscillator.frequency.setValueAtTime(freq, audioContext.currentTime);
+      oscillator.type = type === 'tractor' ? 'sawtooth' : 'square';
+      
+      gainNode.gain.setValueAtTime(0.1, audioContext.currentTime);
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + sound.duration / 1000);
+      
+      oscillator.start(audioContext.currentTime + i * 0.1);
+      oscillator.stop(audioContext.currentTime + sound.duration / 1000 + i * 0.1);
+    });
+  }, []);
+
+  // Background music
+  useEffect(() => {
+    let audioContext: AudioContext;
+    let isPlaying = false;
+
+    const playBackgroundMusic = () => {
+      if (!musicEnabled || isPlaying) return;
+      
+      audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      isPlaying = true;
+
+      const playNote = (freq: number, duration: number, delay: number) => {
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+        
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+        
+        oscillator.frequency.setValueAtTime(freq, audioContext.currentTime + delay);
+        oscillator.type = 'sine';
+        
+        gainNode.gain.setValueAtTime(0.05, audioContext.currentTime + delay);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + delay + duration);
+        
+        oscillator.start(audioContext.currentTime + delay);
+        oscillator.stop(audioContext.currentTime + delay + duration);
+      };
+
+      // Simple farming melody loop
+      const melody = [262, 294, 330, 349, 392, 349, 330, 294]; // C major scale
+      let currentNote = 0;
+      
+      const playLoop = () => {
+        if (!musicEnabled) return;
+        playNote(melody[currentNote], 0.5, 0);
+        currentNote = (currentNote + 1) % melody.length;
+        setTimeout(playLoop, 600);
+      };
+      
+      playLoop();
+    };
+
+    if (musicEnabled) {
+      playBackgroundMusic();
+    }
+
+    return () => {
+      if (audioContext) {
+        audioContext.close();
+      }
+      isPlaying = false;
+    };
+  }, [musicEnabled]);
 
   // Format time helper
   const formatTime = (ms: number): string => {
@@ -109,15 +200,39 @@ export default function FarmGame() {
     });
   };
 
+  // Live timer update for display only
+  const [displayTimers, setDisplayTimers] = useState<Record<number, number>>({});
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDisplayTimers(prev => {
+        const newTimers: Record<number, number> = {};
+        let hasActive = false;
+
+        gameState.fields.forEach((field, index) => {
+          if (field.planted && field.plantTime > 0) {
+            newTimers[index] = Math.max(0, (prev[index] || field.plantTime) - 1000);
+            hasActive = true;
+          }
+        });
+
+        return hasActive ? newTimers : {};
+      });
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [gameState.fields]);
+
   // Update plant progress
   const updatePlantProgress = useCallback(() => {
     setGameState(prevState => {
       const newState = { ...prevState };
       let hasChanges = false;
 
-      newState.fields.forEach(field => {
+      newState.fields.forEach((field, index) => {
         if (field.planted && field.plantTime > 0) {
-          field.plantTime -= 1000;
+          const newTime = field.plantTime - 1000;
+          field.plantTime = Math.max(0, newTime);
           const plant = plants[field.planted];
           const progress = 1 - (field.plantTime / plant.growTime);
           
@@ -125,23 +240,40 @@ export default function FarmGame() {
             field.stage = 3;
             field.plantTime = 0;
             hasChanges = true;
+            playSound('grow');
           } else if (progress >= 0.66 && field.stage < 3) {
             field.stage = 3;
             hasChanges = true;
+            playSound('grow');
           } else if (progress >= 0.33 && field.stage < 2) {
             field.stage = 2;
             hasChanges = true;
+            playSound('grow');
           }
         }
       });
 
+      if (hasChanges) {
+        // Reset display timers when game state changes
+        setDisplayTimers(prev => {
+          const newTimers: Record<number, number> = {};
+          newState.fields.forEach((field, index) => {
+            if (field.planted && field.plantTime > 0) {
+              newTimers[index] = field.plantTime;
+            }
+          });
+          return newTimers;
+        });
+      }
+
       return hasChanges ? newState : prevState;
     });
-  }, []);
+  }, [playSound]);
 
   // Buy field
   const buyField = (index: number) => {
     if (gameState.money >= fieldPrices[index]) {
+      playSound('tractor');
       setGameState(prev => ({
         ...prev,
         money: prev.money - fieldPrices[index],
@@ -159,6 +291,7 @@ export default function FarmGame() {
   const buySeed = (plantKey: string) => {
     const plant = plants[plantKey];
     if (gameState.money >= plant.price) {
+      playSound('buy');
       setGameState(prev => ({
         ...prev,
         money: prev.money - plant.price,
@@ -174,6 +307,7 @@ export default function FarmGame() {
   // Plant seed
   const plantSeed = (plantKey: string, fieldIndex: number) => {
     if (gameState.inventory[plantKey] > 0) {
+      playSound('plant');
       setGameState(prev => {
         const newFields = [...prev.fields];
         const newInventory = { ...prev.inventory };
@@ -192,16 +326,25 @@ export default function FarmGame() {
           inventory: newInventory
         };
       });
+      
+      // Reset display timer for this field
+      setDisplayTimers(prev => ({
+        ...prev,
+        [fieldIndex]: plants[plantKey].growTime
+      }));
+      
       toast({ title: `${plants[plantKey].name} gepflanzt!` });
       setPlatSelectionModal({show: false, fieldIndex: -1});
     }
   };
 
-  // Harvest
+  // Harvest - now adds to harvested inventory
   const harvest = (fieldIndex: number) => {
     const field = gameState.fields[fieldIndex];
     if (field.planted && field.stage === 3) {
       const plant = plants[field.planted];
+      playSound('harvest');
+      
       setGameState(prev => {
         const newFields = [...prev.fields];
         newFields[fieldIndex] = {
@@ -213,16 +356,50 @@ export default function FarmGame() {
 
         return {
           ...prev,
-          money: prev.money + plant.value,
           fields: newFields
         };
       });
-      toast({ title: `${plant.name} geerntet! +$${plant.value}` });
+
+      setHarvestedInventory(prev => ({
+        ...prev,
+        [field.planted!]: (prev[field.planted!] || 0) + 1
+      }));
+
+      // Remove display timer for this field
+      setDisplayTimers(prev => {
+        const newTimers = { ...prev };
+        delete newTimers[fieldIndex];
+        return newTimers;
+      });
+
+      toast({ title: `${plant.name} geerntet!` });
+    }
+  };
+
+  // Sell harvested items
+  const sellHarvestedItem = (plantKey: string, amount: number) => {
+    if (harvestedInventory[plantKey] >= amount) {
+      playSound('buy');
+      const plant = plants[plantKey];
+      const totalValue = plant.value * amount;
+      
+      setHarvestedInventory(prev => ({
+        ...prev,
+        [plantKey]: prev[plantKey] - amount
+      }));
+
+      setGameState(prev => ({
+        ...prev,
+        money: prev.money + totalValue
+      }));
+
+      toast({ title: `${amount}x ${plant.name} verkauft! +$${totalValue}` });
     }
   };
 
   // Select field for planting
   const selectField = (index: number) => {
+    playSound('click');
     if (gameState.inventory && Object.keys(gameState.inventory).some(key => gameState.inventory[key] > 0)) {
       setPlatSelectionModal({show: true, fieldIndex: index});
     } else {
@@ -261,7 +438,7 @@ export default function FarmGame() {
           variant="secondary"
           size="icon"
           className="rounded-full"
-          onClick={() => toast({ title: "Einstellungen kommen bald!" })}
+          onClick={() => setSettingsModal(true)}
         >
           ⚙️
         </Button>
@@ -355,11 +532,11 @@ export default function FarmGame() {
                         <div 
                           className="h-full bg-gradient-progress transition-all duration-500"
                           style={{ 
-                            width: `${field.plantTime > 0 ? (1 - (field.plantTime / plants[field.planted].growTime)) * 100 : 100}%` 
+                            width: `${field.plantTime > 0 ? (1 - ((displayTimers[i] ?? field.plantTime) / plants[field.planted].growTime)) * 100 : 100}%` 
                           }}
                         />
                       </div>
-                      <div className="text-sm text-muted-foreground">{formatTime(field.plantTime)}</div>
+                      <div className="text-sm text-muted-foreground">{formatTime(displayTimers[i] ?? field.plantTime)}</div>
                     </>
                   )}
                 </>
@@ -393,7 +570,20 @@ export default function FarmGame() {
           className="flex flex-col items-center gap-1 min-h-touch min-w-[80px]"
         >
           📦
-          <span className="text-xs">Inventar</span>
+          <span className="text-xs">Samen</span>
+        </Button>
+        <Button
+          variant="secondary"
+          onClick={() => setHarvestedInventoryModal(true)}
+          className="flex flex-col items-center gap-1 min-h-touch min-w-[80px] relative"
+        >
+          🌾
+          <span className="text-xs">Ernte</span>
+          {Object.values(harvestedInventory).reduce((a, b) => a + b, 0) > 0 && (
+            <div className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-xs rounded-full flex items-center justify-center">
+              {Object.values(harvestedInventory).reduce((a, b) => a + b, 0)}
+            </div>
+          )}
         </Button>
       </div>
 
@@ -470,7 +660,7 @@ export default function FarmGame() {
       <Dialog open={inventoryModal} onOpenChange={setInventoryModal}>
         <DialogContent className="max-w-[90vw] max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>📦 Inventar</DialogTitle>
+            <DialogTitle>📦 Samen-Inventar</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
             {Object.entries(gameState.inventory).filter(([_, count]) => count > 0).length === 0 ? (
@@ -493,6 +683,89 @@ export default function FarmGame() {
                   );
                 })
             )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Harvested Inventory Modal */}
+      <Dialog open={harvestedInventoryModal} onOpenChange={setHarvestedInventoryModal}>
+        <DialogContent className="max-w-[90vw] max-h-[80vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>🌾 Ernte-Inventar</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-3">
+            {Object.entries(harvestedInventory).filter(([_, count]) => count > 0).length === 0 ? (
+              <p className="text-center text-muted-foreground">Keine Ernte vorhanden. Ernte deine Pflanzen!</p>
+            ) : (
+              Object.entries(harvestedInventory)
+                .filter(([_, count]) => count > 0)
+                .map(([key, count]) => {
+                  const plant = plants[key];
+                  return (
+                    <div key={key} className="flex items-center justify-between p-3 bg-muted rounded-lg">
+                      <div className="flex items-center gap-3">
+                        <div className="text-4xl">{plant.icon}</div>
+                        <div>
+                          <h3 className="font-semibold">{plant.name}</h3>
+                          <p className="text-sm text-muted-foreground">Anzahl: {count}</p>
+                          <p className="text-sm text-muted-foreground">Verkaufswert: ${plant.value} pro Stück</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => sellHarvestedItem(key, 1)}
+                          disabled={count < 1}
+                        >
+                          1x verkaufen
+                        </Button>
+                        {count >= 5 && (
+                          <Button
+                            size="sm"
+                            onClick={() => sellHarvestedItem(key, Math.min(5, count))}
+                          >
+                            5x verkaufen
+                          </Button>
+                        )}
+                        {count >= 10 && (
+                          <Button
+                            size="sm"
+                            onClick={() => sellHarvestedItem(key, count)}
+                          >
+                            Alle verkaufen
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Settings Modal */}
+      <Dialog open={settingsModal} onOpenChange={setSettingsModal}>
+        <DialogContent className="max-w-[90vw]">
+          <DialogHeader>
+            <DialogTitle>⚙️ Einstellungen</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between p-3 bg-muted rounded-lg">
+              <div>
+                <h3 className="font-semibold">🎵 Hintergrundmusik</h3>
+                <p className="text-sm text-muted-foreground">Entspannende Farm-Musik</p>
+              </div>
+              <Button
+                variant={musicEnabled ? "default" : "outline"}
+                onClick={() => {
+                  playSound('click');
+                  setMusicEnabled(!musicEnabled);
+                }}
+              >
+                {musicEnabled ? "An" : "Aus"}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>
