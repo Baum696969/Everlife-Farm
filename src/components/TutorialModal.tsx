@@ -104,18 +104,18 @@ export default function TutorialModal({ open, onClose }: TutorialModalProps) {
       <DialogContent className="max-w-[95vw] max-h-[85vh] overflow-y-auto p-4">
         <div className="text-center mb-3">
           <div className="text-5xl mb-2">{current.icon}</div>
-          <h2 className="text-lg font-bold">{current.title}</h2>
-          <p className="text-[10px] text-muted-foreground">Seite {page + 1} / {tutorialPages.length}</p>
+          <h2 className="text-xl font-bold">{current.title}</h2>
+          <p className="text-sm text-muted-foreground">Seite {page + 1} / {tutorialPages.length}</p>
         </div>
 
-        <div className="space-y-2 text-xs">
+        <div className="space-y-2 text-sm">
           {current.content.map((line, i) => (
-            <p key={i} className="bg-muted/50 p-2 rounded-lg">{line}</p>
+            <p key={i} className="bg-muted/50 p-2.5 rounded-lg leading-relaxed">{line}</p>
           ))}
         </div>
 
         {current.tip && (
-          <div className="mt-3 p-2 bg-yellow-50 border border-yellow-200 rounded-lg text-xs text-yellow-800">
+          <div className="mt-3 p-2.5 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800 leading-relaxed">
             💡 {current.tip}
           </div>
         )}
