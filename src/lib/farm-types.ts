@@ -58,10 +58,17 @@ export interface FarmerSlot {
   done: boolean;
 }
 
+export interface FarmerInventorySlot {
+  plantKey: string;
+  amount: number;
+}
+
 export interface FarmerState {
   unlocked: boolean;
   level: number; // 1-9999
   slots: FarmerSlot[];
+  inventory: FarmerInventorySlot[]; // max 3 seed types queued
+  autoReplant: boolean;
 }
 
 export interface GameState {
@@ -101,8 +108,12 @@ export interface HarvestResult {
 
 export type HarvestedInventory = Record<string, Record<string, number>>;
 
+export type MusicTrack = 'standard' | 'lofi' | 'lounge' | 'gaming';
+
 export interface SoundSettings {
   music: boolean;
+  musicTrack: MusicTrack;
+  musicVolume: number; // 0-1
   plantSounds: boolean;
   uiSounds: boolean;
   eventRebirthSounds: boolean;

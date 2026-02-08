@@ -31,6 +31,17 @@ const tutorialPages = [
     tip: 'Tipp: Seltene Varianten sind deutlich mehr wert!',
   },
   {
+    title: '🎵 Hintergrundmusik',
+    icon: '🎶',
+    content: [
+      'Everlife Farm spielt standardmäßig entspannte Farm-Musik.',
+      'Du kannst die Musik jederzeit in den ⚙️ Einstellungen ändern.',
+      'Dort findest du verschiedene Tracks zur Auswahl.',
+      'Tippe auf „▶ Preview" um einen Track vorab zu hören.',
+    ],
+    tip: 'Tipp: Standard-Musik ist empfohlen für entspanntes Spielen.',
+  },
+  {
     title: '💧 Gießkanne',
     icon: '💧',
     content: [
@@ -80,7 +91,8 @@ const tutorialPages = [
     content: [
       'Kaufe einen Farmer für 3 Rebirth-Tokens.',
       'Gib ihm Samen – er pflanzt sie im Hintergrund!',
-      'Farmer braucht 3× so lange wie du selbst.',
+      'Der Farmer hat ein eigenes Inventar (max. 3 Seed-Typen).',
+      'Er pflanzt automatisch nach, solange Seeds vorhanden sind.',
       'Hole die Ernte ab, wenn sie fertig ist.',
       'Upgrade den Farmer für mehr Slots und schnelleres Pflanzen!',
     ],

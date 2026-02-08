@@ -8,11 +8,12 @@ import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useToast } from '@/hooks/use-toast';
-import { useFarmSounds } from '@/hooks/use-farm-sounds';
+import { useFarmSounds, musicTracks } from '@/hooks/use-farm-sounds';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { rebirthMilestones } from '@/lib/farm-milestones';
 import TutorialModal from '@/components/TutorialModal';
 import FarmerPanel, { getFarmerConfig, getFarmerUpgradeCost, type FarmerHarvestSummary } from '@/components/FarmerPanel';
-import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState, AutoSellMode, FarmerState } from '@/lib/farm-types';
+import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState, AutoSellMode, FarmerState, MusicTrack } from '@/lib/farm-types';
 import {
   plants, rebirthPlants, getAllPlants, variants, variantKeys,
   eventTypes, pickRandomEvent, fieldPrices, getRebirthCost, getRebirthTokens,
@@ -35,12 +36,12 @@ const SAVE_KEY = 'farmGame4';
 const HARVEST_KEY = 'farmHarvested4';
 
 const defaultSoundSettings: SoundSettings = {
-  music: false, plantSounds: true, uiSounds: true, eventRebirthSounds: true, masterVolume: 0.8, notifications: true,
+  music: true, musicTrack: 'standard', musicVolume: 0.5, plantSounds: true, uiSounds: true, eventRebirthSounds: true, masterVolume: 0.8, notifications: true,
 };
 
 const defaultWaterUpgrades: WaterUpgradeState = { duration: 0, strength: 0, range: 0, cooldownReduction: 0 };
 const defaultRebirthShop: RebirthShopState = { offlineEfficiency: 0, variantChance: 0, eventBonus: 0, waterStrength: 0, fieldStart: 0, indexBonus: 0 };
-const defaultFarmer: FarmerState = { unlocked: false, level: 1, slots: [] };
+const defaultFarmer: FarmerState = { unlocked: false, level: 1, slots: [], inventory: [], autoReplant: true };
 
 function createDefaultState(rebirthShop?: RebirthShopState, rebirths?: number, rebirthFieldsBought?: number): GameState {
   const startFields: Field[] = [];
@@ -106,7 +107,7 @@ export default function FarmGame() {
   const [gameState, setGameState] = useState<GameState>(() => createDefaultState());
   const [harvestedInventory, setHarvestedInventory] = useState<HarvestedInventory>({});
   const [soundSettings, setSoundSettings] = useState<SoundSettings>(defaultSoundSettings);
-  const playSound = useFarmSounds(soundSettings);
+  const { playSound, previewTrack } = useFarmSounds(soundSettings);
 
   // UI state
   const [showTutorial, setShowTutorial] = useState(false);
@@ -279,6 +280,8 @@ export default function FarmGame() {
         if (!loaded.lastPlanted) loaded.lastPlanted = {};
         if (loaded.tutorialCompleted === undefined) loaded.tutorialCompleted = false;
         if (!loaded.farmer) loaded.farmer = { ...defaultFarmer };
+        if (!loaded.farmer.inventory) loaded.farmer.inventory = [];
+        if (loaded.farmer.autoReplant === undefined) loaded.farmer.autoReplant = true;
         // Update 5 migration
         if (!loaded.seenMilestones) loaded.seenMilestones = [];
         if (loaded.disableMilestonePopups === undefined) loaded.disableMilestonePopups = false;
@@ -321,6 +324,8 @@ export default function FarmGame() {
         }
         if (parsed.notifications === undefined) parsed.notifications = true;
         if (parsed.masterVolume === undefined) parsed.masterVolume = 0.8;
+        if (!parsed.musicTrack) parsed.musicTrack = 'standard';
+        if (parsed.musicVolume === undefined) parsed.musicVolume = 0.5;
         setSoundSettings(parsed);
       }
       // Fresh start: show tutorial
@@ -551,7 +556,55 @@ export default function FarmGame() {
     return () => clearInterval(interval);
   }, [gameState.autoWater, gameState.rebirths, gameState.fields, wateredFields, waterCooldowns]);
 
-  useEffect(() => { loadGame(); }, [loadGame]);
+  // === FARMER AUTO-REPLANT ===
+  useEffect(() => {
+    if (!gameState.farmer.unlocked || !gameState.farmer.autoReplant) return;
+    if (gameState.farmer.inventory.length === 0) return;
+
+    const interval = setInterval(() => {
+      const now = Date.now();
+      const config = getFarmerConfig(gameState.farmer.level);
+      const slotsUsed = gameState.farmer.slots.length;
+      const slotsLeft = config.slots - slotsUsed;
+      if (slotsLeft <= 0) return;
+
+      // Check if any inventory has seeds
+      const seedSlot = gameState.farmer.inventory.find(s => s.amount > 0);
+      if (!seedSlot) return;
+
+      const plant = allPlants[seedSlot.plantKey];
+      if (!plant) return;
+
+      const cappedGrowTime = Math.min(plant.growTime, MAX_GROW_TIME);
+      const duration = cappedGrowTime * config.timeMult;
+
+      setGameState(prev => {
+        const invIdx = prev.farmer.inventory.findIndex(s => s.plantKey === seedSlot.plantKey && s.amount > 0);
+        if (invIdx < 0) return prev;
+        const cfg = getFarmerConfig(prev.farmer.level);
+        const left = cfg.slots - prev.farmer.slots.length;
+        if (left <= 0) return prev;
+
+        const newInv = [...prev.farmer.inventory];
+        newInv[invIdx] = { ...newInv[invIdx], amount: newInv[invIdx].amount - 1 };
+        // Remove empty slots
+        const filteredInv = newInv.filter(s => s.amount > 0);
+
+        return {
+          ...prev,
+          farmer: {
+            ...prev.farmer,
+            inventory: filteredInv,
+            slots: [...prev.farmer.slots, { plantKey: seedSlot.plantKey, startTime: now, duration, done: false }],
+          },
+        };
+      });
+    }, 2000);
+
+    return () => clearInterval(interval);
+  }, [gameState.farmer.unlocked, gameState.farmer.autoReplant, gameState.farmer.inventory, gameState.farmer.level, gameState.farmer.slots.length, allPlants]);
+
+
   // Autosave every 10s
   useEffect(() => { const i = setInterval(saveGame, 10000); return () => clearInterval(i); }, [saveGame]);
   useEffect(() => {
@@ -648,7 +701,7 @@ export default function FarmGame() {
     setGameState(prev => ({
       ...prev,
       rebirthTokens: prev.rebirthTokens - 3,
-      farmer: { unlocked: true, level: 1, slots: [] },
+      farmer: { unlocked: true, level: 1, slots: [], inventory: [], autoReplant: true },
     }));
     notify({ title: '👨‍🌾 Farmer eingestellt!' });
     saveGame();
@@ -674,29 +727,28 @@ export default function FarmGame() {
     const plant = allPlants[plantKey];
     if (!plant) return;
     if ((gameState.inventory[plantKey] || 0) < amount) return;
-    const config = getFarmerConfig(gameState.farmer.level);
-    const slotsLeft = config.slots - gameState.farmer.slots.length;
-    const actualAmount = Math.min(amount, slotsLeft);
-    if (actualAmount <= 0) return;
 
     playSound('plant');
-    const cappedGrowTime = Math.min(plant.growTime, MAX_GROW_TIME);
-    const duration = cappedGrowTime * config.timeMult;
-    const now = Date.now();
 
-    const newSlots = Array.from({ length: actualAmount }, (_, i) => ({
-      plantKey, startTime: now + i * 100, duration, done: false,
-    }));
-
-    setGameState(prev => ({
-      ...prev,
-      inventory: { ...prev.inventory, [plantKey]: prev.inventory[plantKey] - actualAmount },
-      farmer: {
-        ...prev.farmer,
-        slots: [...prev.farmer.slots, ...newSlots],
-      },
-    }));
-    notify({ title: `👨‍🌾 ${actualAmount}× ${plant.name} übergeben!` });
+    setGameState(prev => {
+      const newInv = [...prev.farmer.inventory];
+      const existingIdx = newInv.findIndex(s => s.plantKey === plantKey);
+      if (existingIdx >= 0) {
+        newInv[existingIdx] = { ...newInv[existingIdx], amount: newInv[existingIdx].amount + amount };
+      } else {
+        if (newInv.length >= 3) {
+          // Max 3 seed types in farmer inventory
+          return prev;
+        }
+        newInv.push({ plantKey, amount });
+      }
+      return {
+        ...prev,
+        inventory: { ...prev.inventory, [plantKey]: prev.inventory[plantKey] - amount },
+        farmer: { ...prev.farmer, inventory: newInv },
+      };
+    });
+    notify({ title: `👨‍🌾 ${amount}× ${plant.name} übergeben!` });
     saveGame();
   };
 
@@ -961,7 +1013,7 @@ export default function FarmGame() {
     newState.autoSell = hasMilestone(newRebirths, 'autoSell') ? gameState.autoSell : 'off';
     newState.autoWater = hasMilestone(newRebirths, 'autoWater') ? gameState.autoWater : false;
     // Preserve farmer & tutorial
-    newState.farmer = gameState.farmer.unlocked ? { ...gameState.farmer, slots: [] } : gameState.farmer;
+    newState.farmer = gameState.farmer.unlocked ? { ...gameState.farmer, slots: [] } : { ...gameState.farmer };
     newState.tutorialCompleted = gameState.tutorialCompleted;
     newState.lastPlanted = {}; // Reset last planted on rebirth
     // Preserve milestone popup state
@@ -1635,9 +1687,43 @@ export default function FarmGame() {
                 onValueChange={([v]) => setSoundSettings(prev => ({ ...prev, masterVolume: v }))} />
             </div>
 
+            {/* Music Section */}
+            <div className="p-2 bg-muted rounded-lg space-y-2">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-xs">🎵 Musik</h3>
+                <Switch checked={soundSettings.music}
+                  onCheckedChange={(c) => setSoundSettings(prev => ({ ...prev, music: c }))} />
+              </div>
+              {soundSettings.music && (
+                <>
+                  <div>
+                    <p className="text-[10px] text-muted-foreground mb-1">Musik-Lautstärke ({Math.round(soundSettings.musicVolume * 100)}%)</p>
+                    <Slider value={[soundSettings.musicVolume]} min={0} max={1} step={0.05}
+                      onValueChange={([v]) => setSoundSettings(prev => ({ ...prev, musicVolume: v }))} />
+                  </div>
+                  <RadioGroup value={soundSettings.musicTrack}
+                    onValueChange={(v) => {
+                      setSoundSettings(prev => ({ ...prev, musicTrack: v as MusicTrack }));
+                    }}>
+                    {musicTracks.map(track => (
+                      <div key={track.key} className="flex items-center justify-between p-1.5 bg-card rounded-lg">
+                        <div className="flex items-center gap-2">
+                          <RadioGroupItem value={track.key} id={`track-${track.key}`} />
+                          <label htmlFor={`track-${track.key}`} className="text-[11px] cursor-pointer">{track.name}</label>
+                        </div>
+                        <Button size="sm" variant="ghost" className="h-6 text-[9px] px-1.5"
+                          onClick={(e) => { e.preventDefault(); previewTrack(track.key); }}>
+                          ▶ Preview
+                        </Button>
+                      </div>
+                    ))}
+                  </RadioGroup>
+                </>
+              )}
+            </div>
+
             {/* Sound Categories */}
             {([
-              { key: 'music' as const, label: '🎵 Musik', desc: 'Hintergrundmusik' },
               { key: 'plantSounds' as const, label: '🌱 Pflanzen-Sounds', desc: 'Pflanzen & Ernten' },
               { key: 'uiSounds' as const, label: '🔔 UI-Sounds', desc: 'Kaufen, Gießen, Drops' },
               { key: 'eventRebirthSounds' as const, label: '🎉 Event & Rebirth', desc: 'Events, Rebirth, Unlocks' },
@@ -1886,6 +1972,7 @@ export default function FarmGame() {
         onGiveSeeds={giveSeedsToFarmer}
         onCollect={collectFarmerSlot}
         onCollectAll={collectAllFarmerSlots}
+        onToggleAutoReplant={() => setGameState(prev => ({ ...prev, farmer: { ...prev.farmer, autoReplant: !prev.farmer.autoReplant } }))}
         formatTime={formatTime}
         harvestSummary={farmerHarvestSummary}
         onDismissSummary={() => setFarmerHarvestSummary(null)}
