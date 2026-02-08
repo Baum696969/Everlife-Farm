@@ -29,6 +29,8 @@ import {
   getStartMoney, MAX_GROW_TIME, multiRebirthOptions, rebirthFieldCosts,
 } from '@/lib/farm-milestones';
 
+const GAME_VERSION = '0.4.1';
+
 const SAVE_KEY = 'farmGame4';
 const HARVEST_KEY = 'farmHarvested4';
 
@@ -115,6 +117,11 @@ export default function FarmGame() {
   const [waterUpgradeModal, setWaterUpgradeModal] = useState(false);
   const [rebirthShopModal, setRebirthShopModal] = useState(false);
   const [farmerModal, setFarmerModal] = useState(false);
+  const [adminModal, setAdminModal] = useState(false);
+  const [cheatMode, setCheatMode] = useState(false);
+  const [keepMoneyOnRebirth, setKeepMoneyOnRebirth] = useState(false);
+  const versionClickRef = useRef(0);
+  const versionClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
   const [offlineReport, setOfflineReport] = useState<{ time: string; grown: number } | null>(null);
   const [plantSelectionModal, setPlantSelectionModal] = useState<{ show: boolean; fieldIndex: number }>({ show: false, fieldIndex: -1 });
@@ -138,6 +145,13 @@ export default function FarmGame() {
   const lastAutoWaterRef = useRef<number>(0);
 
   const [tick, setTick] = useState(0);
+
+  // Cheat: keep money at max
+  useEffect(() => {
+    if (cheatMode && gameState.money < 999999999) {
+      setGameState(prev => ({ ...prev, money: 999999999 }));
+    }
+  }, [cheatMode, gameState.money]);
 
   // Computed
   const waterStats = getWaterStats(gameState.waterUpgrades);
@@ -855,7 +869,7 @@ export default function FarmGame() {
     const option = multiRebirthOptions.find(o => o.count === multiCount) || multiRebirthOptions[0];
     const baseCost = getRebirthCost(gameState.rebirths);
     const totalCost = Math.floor(baseCost * option.costMult);
-    if (gameState.money < totalCost) return;
+    if (!cheatMode && gameState.money < totalCost) return;
 
     playSound('rebirth');
     const newRebirths = gameState.rebirths + multiCount;
@@ -889,6 +903,12 @@ export default function FarmGame() {
     newState.tutorialCompleted = gameState.tutorialCompleted;
     newState.lastPlanted = {}; // Reset last planted on rebirth
 
+    if (keepMoneyOnRebirth) {
+      newState.money = gameState.money;
+    }
+    if (cheatMode) {
+      newState.money = 999999999;
+    }
     setGameState(newState);
     setHarvestedInventory({});
     setRebirthModal(false);
@@ -1006,7 +1026,7 @@ export default function FarmGame() {
       {/* Header */}
       <div className="bg-card/90 p-3 flex justify-between items-center shadow-lg">
         <div className="flex items-center gap-2 flex-wrap">
-          <div className="text-lg font-bold text-farm-money">💰 ${gameState.money.toLocaleString()}</div>
+          <div className="text-lg font-bold text-farm-money">💰 ${cheatMode ? '∞' : gameState.money.toLocaleString()}</div>
           {gameState.rebirths > 0 && (
             <div className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-bold">
               🔄{gameState.rebirths} ×{rebirthMulti.toFixed(1)}
@@ -1029,9 +1049,25 @@ export default function FarmGame() {
             <div className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-bold">🤖</div>
           )}
         </div>
-        <Button variant="secondary" size="icon" className="rounded-full h-8 w-8" onClick={() => setSettingsModal(true)}>
-          ⚙️
-        </Button>
+        <div className="flex items-center gap-1.5">
+          <span
+            className="text-[8px] text-muted-foreground cursor-default select-none"
+            onClick={() => {
+              versionClickRef.current += 1;
+              if (versionClickTimerRef.current) clearTimeout(versionClickTimerRef.current);
+              versionClickTimerRef.current = setTimeout(() => { versionClickRef.current = 0; }, 3000);
+              if (versionClickRef.current >= 25) {
+                versionClickRef.current = 0;
+                setAdminModal(true);
+              }
+            }}
+          >
+            v{GAME_VERSION}
+          </span>
+          <Button variant="secondary" size="icon" className="rounded-full h-8 w-8" onClick={() => setSettingsModal(true)}>
+            ⚙️
+          </Button>
+        </div>
       </div>
 
       {/* Offline Report - dismissible overlay */}
@@ -1552,9 +1588,41 @@ export default function FarmGame() {
             ))}
 
             <div className="border-t pt-1" />
+            {cheatMode && (
+              <div className="p-2 bg-destructive/10 rounded-lg border border-destructive/30">
+                <p className="text-[10px] text-destructive font-bold">⚠️ Cheat-Modus aktiv</p>
+              </div>
+            )}
             <Button variant="outline" onClick={() => setTutorialModal(true)} className="w-full text-xs h-8">
               📖 Tutorial ansehen
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Admin Modal */}
+      <Dialog open={adminModal} onOpenChange={setAdminModal}>
+        <DialogContent className="max-w-[95vw]">
+          <DialogHeader><DialogTitle>🔧 Admin-Menü</DialogTitle></DialogHeader>
+          <div className="space-y-3">
+            <div className="flex items-center justify-between p-2 bg-destructive/10 rounded-lg border border-destructive/30">
+              <div>
+                <h3 className="font-semibold text-xs">💰 Unendlich Geld</h3>
+                <p className="text-[10px] text-muted-foreground">Geld wird auf ∞ gesetzt</p>
+              </div>
+              <Switch checked={cheatMode} onCheckedChange={(c) => {
+                setCheatMode(c);
+                if (c) setGameState(prev => ({ ...prev, money: 999999999 }));
+              }} />
+            </div>
+            <div className="flex items-center justify-between p-2 bg-destructive/10 rounded-lg border border-destructive/30">
+              <div>
+                <h3 className="font-semibold text-xs">🔄 Geld behalten bei Rebirth</h3>
+                <p className="text-[10px] text-muted-foreground">Geld wird nicht zurückgesetzt</p>
+              </div>
+              <Switch checked={keepMoneyOnRebirth} onCheckedChange={setKeepMoneyOnRebirth} />
+            </div>
+            <p className="text-[9px] text-muted-foreground text-center">v{GAME_VERSION} • 25× Version geklickt</p>
           </div>
         </DialogContent>
       </Dialog>
