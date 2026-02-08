@@ -34,20 +34,22 @@ export interface GameEvent {
 }
 
 export interface WaterUpgradeState {
-  duration: number;     // 0-5, each +5s base duration
-  strength: number;     // 0-3, multiplier tiers
-  range: number;        // 0-2, fields affected: 1/3/5
-  cooldownReduction: number; // 0-5, each -5% cooldown
+  duration: number;
+  strength: number;
+  range: number;
+  cooldownReduction: number;
 }
 
 export interface RebirthShopState {
-  offlineEfficiency: number;  // each +10%, from 70% to 100%
-  variantChance: number;      // each +5% global
-  eventBonus: number;         // focus variant +1 extra stack chance
-  waterStrength: number;      // +0.25 multiplier each
-  fieldStart: number;         // +1 field after rebirth
-  indexBonus: number;         // +1% money per 10% index completion
+  offlineEfficiency: number;
+  variantChance: number;
+  eventBonus: number;
+  waterStrength: number;
+  fieldStart: number;
+  indexBonus: number;
 }
+
+export type AutoSellMode = 'off' | 'normal' | 'all' | 'gold+';
 
 export interface GameState {
   money: number;
@@ -62,6 +64,13 @@ export interface GameState {
   eventType: string | null;
   waterUpgrades: WaterUpgradeState;
   rebirthShop: RebirthShopState;
+  // Update 3
+  autoHarvest: boolean;
+  autoSell: AutoSellMode;
+  autoWater: boolean;
+  rebirthFieldsBought: number; // 0-2
+  milestoneTokensClaimed: boolean; // one-time +5 at rebirth 10
+  startMoneyUsed: boolean; // track if first-plant discount was used this rebirth
 }
 
 export interface HarvestResult {
@@ -81,4 +90,12 @@ export interface SoundSettings {
   event: boolean;
   rebirth: boolean;
   notifications: boolean;
+}
+
+export interface RebirthMilestone {
+  rebirth: number;
+  key: string;
+  name: string;
+  description: string;
+  icon: string;
 }
