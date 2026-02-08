@@ -4,33 +4,48 @@ import { Card } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
 import { Progress } from '@/components/ui/progress';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { useToast } from '@/hooks/use-toast';
 import { useFarmSounds } from '@/hooks/use-farm-sounds';
-import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent } from '@/lib/farm-types';
+import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState } from '@/lib/farm-types';
 import {
   plants, rebirthPlants, getAllPlants, variants, variantKeys,
-  eventTypes, pickRandomEvent, fieldPrices, getRebirthCost,
-  rollVariant, calculateValue,
+  eventTypes, pickRandomEvent, fieldPrices, getRebirthCost, getRebirthTokens,
+  rollStackedVariants, calculateValue, calculateStackedValue,
   EVENT_INTERVAL, EVENT_DURATION,
-  getWaterStats, waterUpgrades,
+  getWaterStats, waterUpgradeDefs,
+  rebirthShopDefs,
+  BASE_OFFLINE_EFFICIENCY, MAX_OFFLINE_HOURS,
+  CHAIN_COOLDOWN_INCREMENT, CHAIN_COOLDOWN_RESET,
 } from '@/lib/farm-data';
 
 const defaultSoundSettings: SoundSettings = {
   music: false, water: true, harvest: true, buy: true, drop: true, event: true, rebirth: true, notifications: true,
 };
 
-function createDefaultState(): GameState {
+const defaultWaterUpgrades: WaterUpgradeState = { duration: 0, strength: 0, range: 0, cooldownReduction: 0 };
+const defaultRebirthShop: RebirthShopState = { offlineEfficiency: 0, variantChance: 0, eventBonus: 0, waterStrength: 0, fieldStart: 0, indexBonus: 0 };
+
+function createDefaultState(rebirthShop?: RebirthShopState): GameState {
+  const startFields: Field[] = [];
+  const extraFields = rebirthShop?.fieldStart || 0;
+  const totalStartFields = 1 + extraFields;
+  for (let i = 0; i < totalStartFields; i++) {
+    startFields.push({ id: i + 1, unlocked: true, planted: null, plantTime: 0, stage: 0, growStartTime: 0 });
+  }
   return {
     money: 10,
-    fields: [{ id: 1, unlocked: true, planted: null, plantTime: 0, stage: 0, growStartTime: 0 }],
+    fields: startFields,
     inventory: {},
     lastUpdate: Date.now(),
     maxFields: 10,
     rebirths: 0,
+    rebirthTokens: 0,
     discoveredVariants: {},
     eventStartTime: null,
     eventType: null,
-    waterLevel: 0,
+    waterUpgrades: { ...defaultWaterUpgrades },
+    rebirthShop: rebirthShop ? { ...rebirthShop } : { ...defaultRebirthShop },
   };
 }
 
@@ -59,7 +74,7 @@ export default function FarmGame() {
   const { toast } = useToast();
 
   // Core state
-  const [gameState, setGameState] = useState<GameState>(createDefaultState);
+  const [gameState, setGameState] = useState<GameState>(() => createDefaultState());
   const [harvestedInventory, setHarvestedInventory] = useState<HarvestedInventory>({});
   const [soundSettings, setSoundSettings] = useState<SoundSettings>(defaultSoundSettings);
   const playSound = useFarmSounds(soundSettings);
@@ -73,8 +88,12 @@ export default function FarmGame() {
   const [settingsModal, setSettingsModal] = useState(false);
   const [indexModal, setIndexModal] = useState(false);
   const [rebirthModal, setRebirthModal] = useState(false);
+  const [waterUpgradeModal, setWaterUpgradeModal] = useState(false);
+  const [rebirthShopModal, setRebirthShopModal] = useState(false);
+  const [offlineReport, setOfflineReport] = useState<{ time: string; grown: number } | null>(null);
   const [plantSelectionModal, setPlantSelectionModal] = useState<{ show: boolean; fieldIndex: number }>({ show: false, fieldIndex: -1 });
-  const [variantPopup, setVariantPopup] = useState<{ show: boolean; plantKey: string; variant: string; value: number } | null>(null);
+  const [variantPopup, setVariantPopup] = useState<{ show: boolean; plantKey: string; variants: string[]; value: number } | null>(null);
+  const [buyAmount, setBuyAmount] = useState<number>(1);
 
   // Animation state
   const [flashingFields, setFlashingFields] = useState<Record<number, boolean>>({});
@@ -84,11 +103,17 @@ export default function FarmGame() {
   const [wateredFields, setWateredFields] = useState<Record<number, number>>({});
   const [waterCooldowns, setWaterCooldowns] = useState<Record<number, number>>({});
 
-  // Live tick counter for re-render
+  // Chain cooldown tracking
+  const lastWaterTimeRef = useRef<number>(0);
+  const waterChainRef = useRef<number>(0);
+
+  // Live tick
   const [tick, setTick] = useState(0);
 
-  // Water stats based on level
-  const waterStats = getWaterStats(gameState.waterLevel);
+  // Water stats
+  const waterStats = getWaterStats(gameState.waterUpgrades);
+  const waterStrengthBonus = gameState.rebirthShop.waterStrength * 0.25;
+  const effectiveWaterSpeed = waterStats.speedMult + waterStrengthBonus;
 
   // Notify wrapper
   const notify = useCallback((options: { title: string; description?: string }) => {
@@ -97,7 +122,7 @@ export default function FarmGame() {
     }
   }, [soundSettings.notifications, toast]);
 
-  // Active event computed
+  // Active event
   const activeEvent: GEvent | null = (() => {
     if (!gameState.eventStartTime || !gameState.eventType) return null;
     const elapsed = Date.now() - gameState.eventStartTime;
@@ -107,14 +132,23 @@ export default function FarmGame() {
 
   const eventTimeLeft = gameState.eventStartTime ? Math.max(0, EVENT_DURATION - (Date.now() - gameState.eventStartTime)) : 0;
 
-  // All available plants for current rebirth level
   const allPlants = getAllPlants(gameState.rebirths);
+
+  // Index-based money bonus
+  const totalVariantsCount = Object.keys({ ...plants, ...rebirthPlants }).length * variantKeys.length;
+  const discoveredCount = Object.values(gameState.discoveredVariants).reduce((a, b) => a + b.length, 0);
+  const indexCompletion = totalVariantsCount > 0 ? discoveredCount / totalVariantsCount : 0;
+  const indexMoneyBonus = gameState.rebirthShop.indexBonus > 0
+    ? 1 + (gameState.rebirthShop.indexBonus * 0.01 * Math.floor(indexCompletion * 10))
+    : 1;
 
   const formatTime = (ms: number): string => {
     if (ms <= 0) return 'Fertig!';
-    const minutes = Math.floor(ms / 60000);
-    const seconds = Math.floor((ms % 60000) / 1000);
-    return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+    const h = Math.floor(ms / 3600000);
+    const m = Math.floor((ms % 3600000) / 60000);
+    const s = Math.floor((ms % 60000) / 1000);
+    if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
   const getFieldProgress = useCallback((field: Field): number => {
@@ -126,13 +160,11 @@ export default function FarmGame() {
   }, [allPlants]);
 
   const getStageFromProgress = (progress: number): number => {
-    if (progress >= 1) return 3;
     if (progress >= 0.66) return 3;
     if (progress >= 0.33) return 2;
     return 1;
   };
 
-  // Spawn particles for rare drops
   const spawnParticles = useCallback((fieldIndex: number, variantKey: string) => {
     const emojis = particleEmojis[variantKey] || ['✨'];
     const count = variantKey === 'legendary' ? 12 : variantKey === 'mythic' ? 10 : 6;
@@ -140,14 +172,12 @@ export default function FarmGame() {
     for (let i = 0; i < count; i++) {
       newParticles.push({
         id: ++particleIdCounter,
-        x: 0,
-        y: 0,
+        x: 0, y: 0,
         emoji: emojis[Math.floor(Math.random() * emojis.length)],
         px: (Math.random() - 0.5) * 120,
         py: -(Math.random() * 80 + 40),
       });
     }
-    // We position relative to the field card via the fieldIndex
     setParticles(prev => [...prev, ...newParticles.map(p => ({ ...p, x: fieldIndex }))]);
     setTimeout(() => {
       setParticles(prev => prev.filter(p => !newParticles.find(np => np.id === p.id)));
@@ -157,37 +187,56 @@ export default function FarmGame() {
   // === SAVE / LOAD ===
   const saveGame = useCallback(() => {
     const toSave = { ...gameState, lastUpdate: Date.now() };
-    localStorage.setItem('farmGame2', JSON.stringify(toSave));
-    localStorage.setItem('farmHarvested2', JSON.stringify(harvestedInventory));
+    localStorage.setItem('farmGame3', JSON.stringify(toSave));
+    localStorage.setItem('farmHarvested3', JSON.stringify(harvestedInventory));
     localStorage.setItem('farmSounds', JSON.stringify(soundSettings));
   }, [gameState, harvestedInventory, soundSettings]);
 
   const loadGame = useCallback(() => {
     try {
-      const saved = localStorage.getItem('farmGame2');
+      const saved = localStorage.getItem('farmGame3');
       if (saved) {
         const loaded: GameState = JSON.parse(saved);
         const now = Date.now();
-        const timePassed = now - loaded.lastUpdate;
+        const timePassed = Math.min(now - loaded.lastUpdate, MAX_OFFLINE_HOURS * 3600000);
+
+        // Offline growth
+        const offlineEff = BASE_OFFLINE_EFFICIENCY + (loaded.rebirthShop?.offlineEfficiency || 0) * 0.1;
+        const offlineMs = timePassed * Math.min(offlineEff, 1);
+        let grownCount = 0;
+
         loaded.fields.forEach(field => {
           if (field.planted && field.plantTime > 0) {
-            field.plantTime = Math.max(0, field.plantTime - timePassed);
+            const before = field.plantTime;
+            field.plantTime = Math.max(0, field.plantTime - offlineMs);
             if (field.plantTime <= 0) {
               field.stage = 3;
               field.plantTime = 0;
+              grownCount++;
             }
           }
           if (!field.growStartTime) field.growStartTime = 0;
         });
+
+        // Migrate from old format
         if (loaded.rebirths === undefined) loaded.rebirths = 0;
         if (!loaded.discoveredVariants) loaded.discoveredVariants = {};
-        if (loaded.waterLevel === undefined) loaded.waterLevel = 0;
+        if (!loaded.waterUpgrades) loaded.waterUpgrades = { ...defaultWaterUpgrades };
+        if (!loaded.rebirthShop) loaded.rebirthShop = { ...defaultRebirthShop };
+        if (loaded.rebirthTokens === undefined) loaded.rebirthTokens = 0;
         loaded.lastUpdate = now;
         setGameState(loaded);
         setShowTutorial(false);
+
+        // Show offline report if significant time passed
+        if (timePassed > 60000) {
+          const mins = Math.floor(timePassed / 60000);
+          const timeStr = mins >= 60 ? `${Math.floor(mins / 60)}h ${mins % 60}m` : `${mins}m`;
+          setOfflineReport({ time: timeStr, grown: grownCount });
+        }
       }
 
-      const savedHarvested = localStorage.getItem('farmHarvested2');
+      const savedHarvested = localStorage.getItem('farmHarvested3');
       if (savedHarvested) setHarvestedInventory(JSON.parse(savedHarvested));
 
       const savedSounds = localStorage.getItem('farmSounds');
@@ -196,9 +245,7 @@ export default function FarmGame() {
         if (parsed.notifications === undefined) parsed.notifications = true;
         setSoundSettings(parsed);
       }
-    } catch {
-      // Fresh start
-    }
+    } catch { /* Fresh start */ }
   }, []);
 
   // === MAIN GAME TICK ===
@@ -208,12 +255,14 @@ export default function FarmGame() {
 
       setGameState(prev => {
         let changed = false;
-        const ws = getWaterStats(prev.waterLevel);
+        const ws = getWaterStats(prev.waterUpgrades);
+        const wsBonus = prev.rebirthShop.waterStrength * 0.25;
         const newFields = prev.fields.map((field, idx) => {
           if (!field.planted || field.plantTime <= 0) return field;
 
           const isWatered = (wateredFields[idx] || 0) > 0;
-          const reduction = isWatered ? 1000 * ws.speedMult : 1000;
+          const speed = isWatered ? (ws.speedMult + wsBonus) : 1;
+          const reduction = 1000 * speed;
           const newTime = Math.max(0, field.plantTime - reduction);
           const plant = getAllPlants(prev.rebirths)[field.planted];
           if (!plant) return field;
@@ -223,9 +272,7 @@ export default function FarmGame() {
 
           if (newTime !== field.plantTime || newStage !== field.stage) {
             changed = true;
-            if (newTime <= 0 && field.plantTime > 0) {
-              playSound('grow');
-            }
+            if (newTime <= 0 && field.plantTime > 0) playSound('grow');
             return { ...field, plantTime: newTime, stage: newStage };
           }
           return field;
@@ -263,10 +310,7 @@ export default function FarmGame() {
         let hasActive = false;
         for (const [k, v] of Object.entries(prev)) {
           const remaining = v - 1000;
-          if (remaining > 0) {
-            next[Number(k)] = remaining;
-            hasActive = true;
-          }
+          if (remaining > 0) { next[Number(k)] = remaining; hasActive = true; }
         }
         return hasActive ? next : {};
       });
@@ -276,10 +320,7 @@ export default function FarmGame() {
         let hasActive = false;
         for (const [k, v] of Object.entries(prev)) {
           const remaining = v - 1000;
-          if (remaining > 0) {
-            next[Number(k)] = remaining;
-            hasActive = true;
-          }
+          if (remaining > 0) { next[Number(k)] = remaining; hasActive = true; }
         }
         return hasActive ? next : {};
       });
@@ -289,12 +330,7 @@ export default function FarmGame() {
   }, [wateredFields, playSound]);
 
   useEffect(() => { loadGame(); }, [loadGame]);
-
-  useEffect(() => {
-    const interval = setInterval(saveGame, 5000);
-    return () => clearInterval(interval);
-  }, [saveGame]);
-
+  useEffect(() => { const i = setInterval(saveGame, 5000); return () => clearInterval(i); }, [saveGame]);
   useEffect(() => {
     window.addEventListener('beforeunload', saveGame);
     return () => window.removeEventListener('beforeunload', saveGame);
@@ -316,17 +352,25 @@ export default function FarmGame() {
     }
   };
 
-  const buySeed = (plantKey: string) => {
+  const buySeed = (plantKey: string, amount: number = 1) => {
     const plant = { ...plants, ...rebirthPlants }[plantKey];
-    if (plant && gameState.money >= plant.price) {
-      playSound('buy');
-      setGameState(prev => ({
-        ...prev,
-        money: prev.money - plant.price,
-        inventory: { ...prev.inventory, [plantKey]: (prev.inventory[plantKey] || 0) + 1 },
-      }));
-      notify({ title: `${plant.name} Samen gekauft!` });
-    }
+    if (!plant) return;
+    const totalCost = plant.price * amount;
+    if (gameState.money < totalCost) return;
+
+    playSound('buy');
+    setGameState(prev => ({
+      ...prev,
+      money: prev.money - totalCost,
+      inventory: { ...prev.inventory, [plantKey]: (prev.inventory[plantKey] || 0) + amount },
+    }));
+    notify({ title: `${amount}× ${plant.name} gekauft!` });
+  };
+
+  const getMaxBuyable = (plantKey: string): number => {
+    const plant = { ...plants, ...rebirthPlants }[plantKey];
+    if (!plant || plant.price <= 0) return 0;
+    return Math.floor(gameState.money / plant.price);
   };
 
   const plantSeed = (plantKey: string, fieldIndex: number) => {
@@ -341,11 +385,7 @@ export default function FarmGame() {
           stage: 1,
           growStartTime: Date.now(),
         };
-        return {
-          ...prev,
-          fields: newFields,
-          inventory: { ...prev.inventory, [plantKey]: prev.inventory[plantKey] - 1 },
-        };
+        return { ...prev, fields: newFields, inventory: { ...prev.inventory, [plantKey]: prev.inventory[plantKey] - 1 } };
       });
       notify({ title: `${allPlants[plantKey].name} gepflanzt!` });
       setPlantSelectionModal({ show: false, fieldIndex: -1 });
@@ -359,30 +399,39 @@ export default function FarmGame() {
     const plant = allPlants[field.planted];
     if (!plant) return;
 
-    const variantKey = rollVariant(field.planted, plant, activeEvent);
-    const variant = variants[variantKey];
-    const value = calculateValue(plant.value, variantKey, gameState.rebirths);
+    const variantResult = rollStackedVariants(field.planted, plant, activeEvent, gameState.rebirthShop.variantChance);
+    const value = calculateStackedValue(plant.value, variantResult, gameState.rebirths);
+    const finalValue = Math.floor(value * indexMoneyBonus);
+    const hasRare = variantResult.some(v => v !== 'normal');
 
     playSound('harvest');
-    if (variantKey !== 'normal') {
-      playSound('drop');
-    }
+    if (hasRare) playSound('drop');
 
-    // Flash effect
+    // Flash
     setFlashingFields(prev => ({ ...prev, [fieldIndex]: true }));
     setTimeout(() => setFlashingFields(prev => ({ ...prev, [fieldIndex]: false })), 400);
 
-    // Particle effect for rare variants
-    if (variantKey !== 'normal') {
-      spawnParticles(fieldIndex, variantKey);
+    // Particles for rare
+    if (hasRare) {
+      const bestVariant = variantResult[variantResult.length - 1];
+      spawnParticles(fieldIndex, bestVariant);
     }
 
     const plantKey = field.planted;
-    const isNewVariant = !(gameState.discoveredVariants[plantKey]?.includes(variantKey));
+
+    // Store in harvested inventory (use best variant as key for stacked)
+    const bestVariant = hasRare ? variantResult.filter(v => v !== 'normal').sort((a, b) => {
+      return variantKeys.indexOf(b) - variantKeys.indexOf(a);
+    })[0] : 'normal';
+
+    // Track new discoveries
+    const newVariants = variantResult.filter(v => v !== 'normal' && !(gameState.discoveredVariants[plantKey]?.includes(v)));
 
     setHarvestedInventory(prev => {
       const plantHarvest = { ...(prev[plantKey] || {}) };
-      plantHarvest[variantKey] = (plantHarvest[variantKey] || 0) + 1;
+      // For stacked: store under the best variant key
+      const storeKey = variantResult.length > 1 ? variantResult.join('+') : variantResult[0];
+      plantHarvest[storeKey] = (plantHarvest[storeKey] || 0) + 1;
       return { ...prev, [plantKey]: plantHarvest };
     });
 
@@ -391,37 +440,42 @@ export default function FarmGame() {
       newFields[fieldIndex] = { ...newFields[fieldIndex], planted: null, plantTime: 0, stage: 0, growStartTime: 0 };
       const newDiscovered = { ...prev.discoveredVariants };
       if (!newDiscovered[plantKey]) newDiscovered[plantKey] = [];
-      if (!newDiscovered[plantKey].includes(variantKey)) {
-        newDiscovered[plantKey] = [...newDiscovered[plantKey], variantKey];
-      }
+      variantResult.forEach(v => {
+        if (!newDiscovered[plantKey].includes(v)) {
+          newDiscovered[plantKey] = [...newDiscovered[plantKey], v];
+        }
+      });
       return { ...prev, fields: newFields, discoveredVariants: newDiscovered };
     });
 
-    if (isNewVariant && variantKey !== 'normal') {
-      playSound('newVariant');
-      setVariantPopup({ show: true, plantKey, variant: variantKey, value });
-    } else if (variantKey !== 'normal') {
-      setVariantPopup({ show: true, plantKey, variant: variantKey, value });
+    if (hasRare) {
+      if (newVariants.length > 0) playSound('newVariant');
+      setVariantPopup({ show: true, plantKey, variants: variantResult.filter(v => v !== 'normal'), value: finalValue });
     } else {
       notify({ title: `${plant.name} geerntet! (im Inventar)` });
     }
   };
 
-  const sellHarvested = (plantKey: string, variantKey: string, amount: number) => {
+  const getVariantValueFromKey = (plantKey: string, variantKeyStr: string): number => {
     const plant = allPlants[plantKey];
-    if (!plant) return;
-    const currentCount = harvestedInventory[plantKey]?.[variantKey] || 0;
+    if (!plant) return 0;
+    const vKeys = variantKeyStr.split('+');
+    return Math.floor(calculateStackedValue(plant.value, vKeys, gameState.rebirths) * indexMoneyBonus);
+  };
+
+  const sellHarvested = (plantKey: string, variantKeyStr: string, amount: number) => {
+    const currentCount = harvestedInventory[plantKey]?.[variantKeyStr] || 0;
     if (currentCount < amount) return;
 
     playSound('buy');
-    const totalValue = calculateValue(plant.value, variantKey, gameState.rebirths) * amount;
+    const unitValue = getVariantValueFromKey(plantKey, variantKeyStr);
+    const totalValue = unitValue * amount;
 
     setHarvestedInventory(prev => {
       const plantHarvest = { ...(prev[plantKey] || {}) };
-      plantHarvest[variantKey] -= amount;
-      if (plantHarvest[variantKey] <= 0) delete plantHarvest[variantKey];
-      const isEmpty = Object.keys(plantHarvest).length === 0;
-      if (isEmpty) {
+      plantHarvest[variantKeyStr] -= amount;
+      if (plantHarvest[variantKeyStr] <= 0) delete plantHarvest[variantKeyStr];
+      if (Object.keys(plantHarvest).length === 0) {
         const next = { ...prev };
         delete next[plantKey];
         return next;
@@ -430,17 +484,99 @@ export default function FarmGame() {
     });
 
     setGameState(prev => ({ ...prev, money: prev.money + totalValue }));
-    notify({ title: `${amount}x ${plant.name} verkauft! +$${totalValue}` });
+    notify({ title: `${amount}× verkauft! +$${totalValue}` });
+  };
+
+  const sellAll = (filter: 'all' | 'normal' | 'rare') => {
+    let totalValue = 0;
+    let totalCount = 0;
+
+    const newInventory: HarvestedInventory = {};
+    for (const [plantKey, plantVariants] of Object.entries(harvestedInventory)) {
+      for (const [vKeyStr, count] of Object.entries(plantVariants)) {
+        if (count <= 0) continue;
+        const isNormal = vKeyStr === 'normal';
+        const shouldSell = filter === 'all' || (filter === 'normal' && isNormal) || (filter === 'rare' && !isNormal);
+
+        if (shouldSell) {
+          totalValue += getVariantValueFromKey(plantKey, vKeyStr) * count;
+          totalCount += count;
+        } else {
+          if (!newInventory[plantKey]) newInventory[plantKey] = {};
+          newInventory[plantKey][vKeyStr] = count;
+        }
+      }
+    }
+
+    if (totalCount === 0) return;
+    playSound('buy');
+    setHarvestedInventory(newInventory);
+    setGameState(prev => ({ ...prev, money: prev.money + totalValue }));
+    notify({ title: `${totalCount}× verkauft! +$${totalValue}` });
+  };
+
+  const getTotalSellValue = (filter: 'all' | 'normal' | 'rare'): { value: number; count: number } => {
+    let value = 0;
+    let count = 0;
+    for (const [plantKey, plantVariants] of Object.entries(harvestedInventory)) {
+      for (const [vKeyStr, c] of Object.entries(plantVariants)) {
+        if (c <= 0) continue;
+        const isNormal = vKeyStr === 'normal';
+        const match = filter === 'all' || (filter === 'normal' && isNormal) || (filter === 'rare' && !isNormal);
+        if (match) {
+          value += getVariantValueFromKey(plantKey, vKeyStr) * c;
+          count += c;
+        }
+      }
+    }
+    return { value, count };
   };
 
   const waterField = (fieldIndex: number) => {
     if (waterCooldowns[fieldIndex] > 0) return;
     if (wateredFields[fieldIndex] > 0) return;
 
+    // Chain cooldown
+    const now = Date.now();
+    if (now - lastWaterTimeRef.current > CHAIN_COOLDOWN_RESET) {
+      waterChainRef.current = 0;
+    }
+    const chainDelay = waterChainRef.current * CHAIN_COOLDOWN_INCREMENT;
+    if (chainDelay > 0) {
+      // Apply chain delay as extra cooldown
+    }
+    waterChainRef.current++;
+    lastWaterTimeRef.current = now;
+
     playSound('water');
-    setWateredFields(prev => ({ ...prev, [fieldIndex]: waterStats.duration }));
-    setWaterCooldowns(prev => ({ ...prev, [fieldIndex]: waterStats.duration + waterStats.cooldown }));
-    notify({ title: `💧 Feld gegossen! ×${waterStats.speedMult} Geschwindigkeit!` });
+
+    // Apply to range
+    const range = waterStats.range;
+    const fieldsToWater: number[] = [];
+    const half = Math.floor(range / 2);
+    for (let offset = -half; offset <= half; offset++) {
+      const idx = fieldIndex + offset;
+      if (idx >= 0 && idx < gameState.fields.length && gameState.fields[idx]?.unlocked && gameState.fields[idx]?.planted) {
+        if (!wateredFields[idx] && !waterCooldowns[idx]) {
+          fieldsToWater.push(idx);
+        }
+      }
+    }
+    if (fieldsToWater.length === 0) fieldsToWater.push(fieldIndex);
+
+    setWateredFields(prev => {
+      const next = { ...prev };
+      fieldsToWater.forEach(idx => { next[idx] = waterStats.duration; });
+      return next;
+    });
+    setWaterCooldowns(prev => {
+      const next = { ...prev };
+      fieldsToWater.forEach(idx => { next[idx] = waterStats.duration + waterStats.cooldown + chainDelay; });
+      return next;
+    });
+
+    const rangeText = fieldsToWater.length > 1 ? ` (${fieldsToWater.length} Felder)` : '';
+    notify({ title: `💧 Gegossen! ×${effectiveWaterSpeed.toFixed(1)}${rangeText}` });
   };
 
   const selectField = (index: number) => {
@@ -458,65 +594,91 @@ export default function FarmGame() {
 
     playSound('rebirth');
     const newRebirths = gameState.rebirths + 1;
-    const preservedWaterLevel = gameState.waterLevel;
-    setGameState(prev => ({
-      ...createDefaultState(),
-      rebirths: newRebirths,
-      discoveredVariants: prev.discoveredVariants,
-      waterLevel: preservedWaterLevel,
-      eventStartTime: null,
-      eventType: null,
-    }));
+    const tokens = getRebirthTokens(gameState.rebirths);
+    const newTokens = gameState.rebirthTokens + tokens;
+    const preservedShop = { ...gameState.rebirthShop };
+    const preservedDiscovered = { ...gameState.discoveredVariants };
+
+    const newState = createDefaultState(preservedShop);
+    newState.rebirths = newRebirths;
+    newState.rebirthTokens = newTokens;
+    newState.discoveredVariants = preservedDiscovered;
+    newState.rebirthShop = preservedShop;
+
+    setGameState(newState);
     setHarvestedInventory({});
     setRebirthModal(false);
-    notify({ title: `🔄 Rebirth ${newRebirths}! +10% Multiplikator!` });
+    notify({ title: `🔄 Rebirth ${newRebirths}! +${tokens} Token${tokens > 1 ? 's' : ''}!` });
   };
 
-  const upgradeWater = () => {
-    const nextLevel = gameState.waterLevel + 1;
-    if (nextLevel >= waterUpgrades.length) return;
-    const cost = waterUpgrades[nextLevel].cost;
+  const buyRebirthUpgrade = (key: keyof RebirthShopState) => {
+    const def = rebirthShopDefs.find(d => d.key === key);
+    if (!def) return;
+    const currentLevel = gameState.rebirthShop[key];
+    if (currentLevel >= def.maxLevel) return;
+    const cost = def.costs[currentLevel];
+    if (gameState.rebirthTokens < cost) return;
+
+    playSound('buy');
+    setGameState(prev => ({
+      ...prev,
+      rebirthTokens: prev.rebirthTokens - cost,
+      rebirthShop: { ...prev.rebirthShop, [key]: prev.rebirthShop[key] + 1 },
+    }));
+    notify({ title: `${def.emoji} ${def.name} verbessert!` });
+  };
+
+  const buyWaterUpgrade = (key: keyof WaterUpgradeState) => {
+    const def = waterUpgradeDefs.find(d => d.key === key);
+    if (!def) return;
+    const currentLevel = gameState.waterUpgrades[key];
+    if (currentLevel >= def.maxLevel) return;
+    const cost = def.costs[currentLevel];
     if (gameState.money < cost) return;
 
     playSound('buy');
-    setGameState(prev => ({ ...prev, money: prev.money - cost, waterLevel: nextLevel }));
-    notify({ title: `💧 Gießkanne auf Level ${nextLevel} verbessert!` });
+    setGameState(prev => ({
+      ...prev,
+      money: prev.money - cost,
+      waterUpgrades: { ...prev.waterUpgrades, [key]: prev.waterUpgrades[key] + 1 },
+    }));
+    notify({ title: `💧 ${def.name} verbessert!` });
   };
 
-  // === COMPUTED VALUES ===
+  // === COMPUTED ===
   const totalHarvestedCount = Object.values(harvestedInventory).reduce(
-    (total, plantVariants) => total + Object.values(plantVariants).reduce((a, b) => a + b, 0), 0
+    (total, pv) => total + Object.values(pv).reduce((a, b) => a + b, 0), 0
   );
-
   const rebirthCost = getRebirthCost(gameState.rebirths);
   const rebirthMulti = 1 + 0.1 * gameState.rebirths;
+  const nextTokens = getRebirthTokens(gameState.rebirths);
 
-  const totalVariants = Object.keys(allPlants).length * variantKeys.length;
-  const discoveredCount = Object.values(gameState.discoveredVariants).reduce((a, b) => a + b.length, 0);
+  const getVariantDisplay = (vKeyStr: string): { label: string; color: string; emoji: string } => {
+    const parts = vKeyStr.split('+');
+    if (parts.length === 1) {
+      const v = variants[parts[0]];
+      return { label: v?.name || parts[0], color: v?.color || '', emoji: v?.emoji || '' };
+    }
+    const labels = parts.map(p => variants[p]?.name || p);
+    const emojis = parts.map(p => variants[p]?.emoji || '').join('');
+    const bestPart = parts.sort((a, b) => variantKeys.indexOf(b) - variantKeys.indexOf(a))[0];
+    return { label: labels.join(' + '), color: variants[bestPart]?.color || '', emoji: emojis };
+  };
 
   // === RENDER ===
   return (
     <div className="min-h-screen bg-gradient-sky relative">
-      {/* Particles layer */}
+      {/* Particles */}
       {particles.length > 0 && (
         <div className="fixed inset-0 pointer-events-none z-[100]">
           {particles.map(p => {
-            // Position relative to field grid: approximate center of field card
             const col = p.x % 2;
             const row = Math.floor(p.x / 2);
-            const baseX = col * 50 + 25; // % of viewport width
-            const baseY = row * 180 + 120; // approximate px from top
+            const baseX = col * 50 + 25;
+            const baseY = row * 180 + 120;
             return (
-              <span
-                key={p.id}
-                className="animate-particle absolute text-2xl"
-                style={{
-                  left: `${baseX}%`,
-                  top: `${baseY}px`,
-                  '--px': `${p.px}px`,
-                  '--py': `${p.py}px`,
-                } as React.CSSProperties}
-              >
+              <span key={p.id} className="animate-particle absolute text-2xl"
+                style={{ left: `${baseX}%`, top: `${baseY}px`, '--px': `${p.px}px`, '--py': `${p.py}px` } as React.CSSProperties}>
                 {p.emoji}
               </span>
             );
@@ -532,37 +694,51 @@ export default function FarmGame() {
       )}
 
       {/* Header */}
-      <div className="bg-card/90 p-4 flex justify-between items-center shadow-lg">
-        <div className="flex items-center gap-3">
-          <div className="text-xl font-bold text-farm-money">💰 ${gameState.money}</div>
+      <div className="bg-card/90 p-3 flex justify-between items-center shadow-lg">
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="text-lg font-bold text-farm-money">💰 ${gameState.money.toLocaleString()}</div>
           {gameState.rebirths > 0 && (
-            <div className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full font-bold">
-              🔄 {gameState.rebirths} (×{rebirthMulti.toFixed(1)})
+            <div className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-bold">
+              🔄{gameState.rebirths} ×{rebirthMulti.toFixed(1)}
+            </div>
+          )}
+          {gameState.rebirthTokens > 0 && (
+            <div className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-bold">
+              🪙{gameState.rebirthTokens}
             </div>
           )}
         </div>
-        <Button variant="secondary" size="icon" className="rounded-full" onClick={() => setSettingsModal(true)}>
+        <Button variant="secondary" size="icon" className="rounded-full h-8 w-8" onClick={() => setSettingsModal(true)}>
           ⚙️
         </Button>
       </div>
 
-      {/* Tutorial */}
-      {showTutorial && (
-        <Card className="m-4 p-5 bg-yellow-100 border-yellow-300 text-center">
-          <h2 className="text-xl font-bold text-yellow-800 mb-3">🌱 Willkommen beim Farm Clicker!</h2>
-          <div className="text-yellow-800 space-y-1 text-sm">
-            <p>1. Kaufe Samen im Händler 🛒</p>
-            <p>2. Pflanze auf Felder 🌱</p>
-            <p>3. Gieße für schnelleres Wachstum 💧</p>
-            <p>4. Ernte → Inventar → Verkaufen! 💰</p>
-            <p>5. Achte auf seltene Varianten! ✨</p>
-          </div>
-          <Button onClick={() => setShowTutorial(false)} className="mt-4">Los geht's!</Button>
+      {/* Offline Report */}
+      {offlineReport && (
+        <Card className="m-3 p-4 bg-blue-50 border-blue-200 text-center">
+          <h3 className="font-bold text-sm mb-1">💤 Willkommen zurück!</h3>
+          <p className="text-xs text-muted-foreground">Du warst {offlineReport.time} offline.</p>
+          {offlineReport.grown > 0 && <p className="text-xs text-farm-money font-bold">{offlineReport.grown} Pflanzen fertig gewachsen!</p>}
+          <p className="text-[10px] text-muted-foreground mt-1">Offline-Effizienz: {Math.round((BASE_OFFLINE_EFFICIENCY + gameState.rebirthShop.offlineEfficiency * 0.1) * 100)}%</p>
+          <Button size="sm" className="mt-2" onClick={() => setOfflineReport(null)}>OK</Button>
         </Card>
       )}
 
-      {/* Game Area */}
-      <div className="p-3 pb-28 grid grid-cols-2 gap-3">
+      {/* Tutorial */}
+      {showTutorial && !offlineReport && (
+        <Card className="m-3 p-4 bg-yellow-100 border-yellow-300 text-center">
+          <h2 className="text-lg font-bold text-yellow-800 mb-2">🌱 Willkommen!</h2>
+          <div className="text-yellow-800 space-y-0.5 text-xs">
+            <p>1. Samen kaufen 🛒 → 2. Pflanzen 🌱</p>
+            <p>3. Gießen 💧 → 4. Ernten & Verkaufen 💰</p>
+            <p>5. Seltene Varianten sammeln! ✨</p>
+          </div>
+          <Button onClick={() => setShowTutorial(false)} size="sm" className="mt-3">Los geht's!</Button>
+        </Card>
+      )}
+
+      {/* Game Area - Fields */}
+      <div className="p-3 pb-24 grid grid-cols-2 gap-2">
         {Array.from({ length: gameState.maxFields }, (_, i) => {
           const field = gameState.fields[i] || { id: i + 1, unlocked: false, planted: null, plantTime: 0, stage: 0, growStartTime: 0 };
           const isWatered = (wateredFields[i] || 0) > 0;
@@ -570,73 +746,55 @@ export default function FarmGame() {
           const isFlashing = flashingFields[i] || false;
 
           return (
-            <Card
-              key={i}
-              className={`p-3 text-center min-h-40 flex flex-col justify-center relative transition-all active:scale-95 ${
-                !field.unlocked
-                  ? 'bg-farm-locked border-farm-locked opacity-70'
-                  : 'bg-farm-field border-farm-field-border'
-              } ${isWatered ? 'ring-2 ring-blue-400' : ''} ${isFlashing ? 'animate-harvest-flash' : ''}`}
-            >
-              <div className="absolute top-1 left-2 bg-card/80 px-2 py-0.5 rounded-full text-[10px] font-bold">
-                Feld {i + 1}
+            <Card key={i}
+              className={`p-2 text-center min-h-[140px] flex flex-col justify-center relative transition-all active:scale-95 ${
+                !field.unlocked ? 'bg-farm-locked border-farm-locked opacity-70' : 'bg-farm-field border-farm-field-border'
+              } ${isWatered ? 'ring-2 ring-blue-400' : ''} ${isFlashing ? 'animate-harvest-flash' : ''}`}>
+              <div className="absolute top-0.5 left-1.5 bg-card/80 px-1.5 py-0.5 rounded-full text-[9px] font-bold">
+                {i + 1}
               </div>
 
               {isWatered && (
-                <div className="absolute top-1 right-2 text-xs bg-blue-400 text-white px-1.5 py-0.5 rounded-full">
-                  💧 {Math.ceil((wateredFields[i] || 0) / 1000)}s
+                <div className="absolute top-0.5 right-1.5 text-[9px] bg-blue-400 text-white px-1 py-0.5 rounded-full">
+                  💧{Math.ceil((wateredFields[i] || 0) / 1000)}s
                 </div>
               )}
 
               {!field.unlocked ? (
                 <>
-                  <div className="text-5xl mb-2">🔒</div>
+                  <div className="text-4xl mb-1">🔒</div>
                   {i < fieldPrices.length && (
                     <>
-                      <div className="text-secondary font-bold text-sm mb-1">Preis: ${fieldPrices[i]}</div>
-                      <Button onClick={() => buyField(i)} disabled={gameState.money < fieldPrices[i]} size="sm" className="min-h-touch">
-                        Kaufen
-                      </Button>
+                      <div className="text-secondary font-bold text-xs">${fieldPrices[i]}</div>
+                      <Button onClick={() => buyField(i)} disabled={gameState.money < fieldPrices[i]} size="sm" className="mt-1 h-7 text-xs">Kaufen</Button>
                     </>
                   )}
                 </>
               ) : !field.planted ? (
                 <>
-                  <div className="text-5xl mb-2">🌱</div>
-                  <p className="text-xs mb-2">Bereit</p>
-                  <Button onClick={() => selectField(i)} size="sm" className="min-h-touch">
-                    Pflanzen
-                  </Button>
+                  <div className="text-4xl mb-1">🌱</div>
+                  <Button onClick={() => selectField(i)} size="sm" className="h-7 text-xs">Pflanzen</Button>
                 </>
               ) : (
                 <>
-                  <div className="text-5xl mb-1">
+                  <div className="text-4xl mb-0.5">
                     {field.stage > 0 ? allPlants[field.planted]?.stages[field.stage - 1] : allPlants[field.planted]?.stages[0]}
                   </div>
-                  <p className="text-xs mb-1">{allPlants[field.planted]?.name}</p>
+                  <p className="text-[10px] mb-0.5">{allPlants[field.planted]?.name}</p>
 
                   {field.plantTime <= 0 ? (
-                    <Button onClick={() => harvest(i)} size="sm" className="min-h-touch">
-                      Ernten
-                    </Button>
+                    <Button onClick={() => harvest(i)} size="sm" className="h-7 text-xs">Ernten</Button>
                   ) : (
                     <>
-                      <div className="w-full h-3 bg-muted rounded-full overflow-hidden mb-1">
-                        <div
-                          className="h-full bg-gradient-progress transition-all duration-500"
-                          style={{ width: `${getFieldProgress(field) * 100}%` }}
-                        />
+                      <div className="w-full h-2 bg-muted rounded-full overflow-hidden mb-0.5">
+                        <div className="h-full bg-gradient-progress transition-all duration-500"
+                          style={{ width: `${getFieldProgress(field) * 100}%` }} />
                       </div>
-                      <div className="text-[10px] text-muted-foreground">{formatTime(field.plantTime)}</div>
-                      <Button
-                        onClick={(e) => { e.stopPropagation(); waterField(i); }}
-                        disabled={isWatered || cooldown > 0}
-                        size="sm"
-                        variant="outline"
-                        className="mt-1 text-xs h-7"
-                      >
-                        {isWatered ? `💧 ${Math.ceil((wateredFields[i] || 0) / 1000)}s` :
-                         cooldown > 0 ? `⏳ ${Math.ceil(cooldown / 1000)}s` : `💧 Gießen (×${waterStats.speedMult})`}
+                      <div className="text-[9px] text-muted-foreground">{formatTime(field.plantTime)}</div>
+                      <Button onClick={(e) => { e.stopPropagation(); waterField(i); }}
+                        disabled={isWatered || cooldown > 0} size="sm" variant="outline" className="mt-0.5 text-[9px] h-6 px-1">
+                        {isWatered ? `💧${Math.ceil((wateredFields[i] || 0) / 1000)}s` :
+                         cooldown > 0 ? `⏳${Math.ceil(cooldown / 1000)}s` : `💧×${effectiveWaterSpeed.toFixed(1)}`}
                       </Button>
                     </>
                   )}
@@ -648,32 +806,22 @@ export default function FarmGame() {
       </div>
 
       {/* Bottom Navigation - 6 tabs */}
-      <div className="fixed bottom-0 left-0 right-0 bg-card/95 p-2 flex justify-around shadow-lg z-50">
+      <div className="fixed bottom-0 left-0 right-0 bg-card/95 p-1.5 flex justify-around shadow-lg z-50">
         {[
           { icon: '🛒', label: 'Händler', onClick: () => setShopModal(true) },
-          { icon: '🚜', label: 'Feld', onClick: () => setFieldShopModal(true) },
-          { icon: '📦', label: 'Samen', onClick: () => setInventoryModal(true) },
-          {
-            icon: '🌾', label: 'Ernte', onClick: () => setHarvestedModal(true),
-            badge: totalHarvestedCount > 0 ? totalHarvestedCount : undefined,
-          },
+          { icon: '💧', label: 'Gießkanne', onClick: () => setWaterUpgradeModal(true) },
+          { icon: '🌾', label: 'Ernte', onClick: () => setHarvestedModal(true), badge: totalHarvestedCount > 0 ? totalHarvestedCount : undefined },
           { icon: '📖', label: 'Index', onClick: () => setIndexModal(true) },
-          {
-            icon: '🔄', label: 'Rebirth', onClick: () => setRebirthModal(true),
-            badge: gameState.rebirths > 0 ? gameState.rebirths : undefined,
-          },
+          { icon: '🪙', label: 'R-Shop', onClick: () => setRebirthShopModal(true), badge: gameState.rebirthTokens > 0 ? gameState.rebirthTokens : undefined },
+          { icon: '🔄', label: 'Rebirth', onClick: () => setRebirthModal(true), badge: gameState.rebirths > 0 ? gameState.rebirths : undefined },
         ].map(({ icon, label, onClick, badge }) => (
-          <Button
-            key={label}
-            variant="secondary"
-            onClick={onClick}
-            className="flex flex-col items-center gap-0.5 min-h-touch min-w-[48px] px-1.5 relative text-xs"
-          >
-            <span className="text-lg">{icon}</span>
-            <span className="text-[9px]">{label}</span>
+          <Button key={label} variant="ghost" onClick={onClick}
+            className="flex flex-col items-center gap-0 min-h-[44px] min-w-[44px] px-1 relative text-xs h-auto py-1">
+            <span className="text-base">{icon}</span>
+            <span className="text-[8px] leading-tight">{label}</span>
             {badge !== undefined && (
-              <div className="absolute -top-1 -right-1 w-4 h-4 bg-destructive text-destructive-foreground text-[10px] rounded-full flex items-center justify-center">
-                {badge}
+              <div className="absolute -top-0.5 -right-0.5 w-4 h-4 bg-destructive text-destructive-foreground text-[8px] rounded-full flex items-center justify-center font-bold">
+                {badge > 99 ? '99+' : badge}
               </div>
             )}
           </Button>
@@ -682,51 +830,137 @@ export default function FarmGame() {
 
       {/* ===== MODALS ===== */}
 
-      {/* Shop Modal - with rebirth plants */}
+      {/* Shop Modal - Tabs: Samen / Felder / Spezial */}
       <Dialog open={shopModal} onOpenChange={setShopModal}>
         <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>🛒 Samen-Händler</DialogTitle></DialogHeader>
-          <div className="space-y-2">
-            {/* Regular plants */}
-            {Object.entries(plants).map(([key, plant]) => (
-              <div key={key} className="flex items-center justify-between p-2 bg-muted rounded-lg text-sm">
-                <div className="flex items-center gap-2">
-                  <span className="text-3xl">{plant.icon}</span>
-                  <div>
-                    <h3 className="font-semibold text-sm">{plant.name}</h3>
-                    <p className="text-[11px] text-muted-foreground">${plant.price} | Wert: ${plant.value} | {formatTime(plant.growTime)}</p>
-                  </div>
-                </div>
-                <Button onClick={() => buySeed(key)} disabled={gameState.money < plant.price} size="sm">
-                  Kaufen
+          <DialogHeader><DialogTitle>🛒 Händler</DialogTitle></DialogHeader>
+          <Tabs defaultValue="seeds">
+            <TabsList className="w-full grid grid-cols-3">
+              <TabsTrigger value="seeds" className="text-xs">🌱 Samen</TabsTrigger>
+              <TabsTrigger value="fields" className="text-xs">🚜 Felder</TabsTrigger>
+              <TabsTrigger value="special" className="text-xs">✨ Spezial</TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="seeds" className="space-y-1.5 mt-2">
+              {/* Buy amount selector */}
+              <div className="flex gap-1 mb-2">
+                {[1, 5, 10].map(n => (
+                  <Button key={n} size="sm" variant={buyAmount === n ? 'default' : 'outline'}
+                    onClick={() => setBuyAmount(n)} className="flex-1 h-7 text-xs">
+                    ×{n}
+                  </Button>
+                ))}
+                <Button size="sm" variant={buyAmount === -1 ? 'default' : 'outline'}
+                  onClick={() => setBuyAmount(-1)} className="flex-1 h-7 text-xs">
+                  Max
                 </Button>
               </div>
-            ))}
 
-            {/* Separator */}
-            <div className="border-t pt-3 mt-3">
-              <h3 className="font-bold text-sm mb-2 text-purple-600">✨ Rebirth-Pflanzen</h3>
-            </div>
-
-            {/* Rebirth plants */}
-            {Object.entries(rebirthPlants).map(([key, plant]) => {
-              const unlocked = gameState.rebirths >= (plant.rebirthRequired || 0);
-              return (
-                <div key={key} className={`flex items-center justify-between p-2 bg-muted rounded-lg text-sm ${!unlocked ? 'opacity-50' : ''}`}>
-                  <div className="flex items-center gap-2">
-                    <span className="text-3xl">{plant.icon}</span>
-                    <div>
-                      <h3 className="font-semibold text-sm">{plant.name}</h3>
-                      <span className="text-purple-600 text-[10px] font-bold">✨ REBIRTH</span>
-                      <p className="text-[11px] text-muted-foreground">${plant.price} | Wert: ${plant.value} | {formatTime(plant.growTime)}</p>
-                      {!unlocked && (
-                        <p className="text-[11px] text-destructive font-bold">🔒 Benötigt {plant.rebirthRequired} Rebirths</p>
-                      )}
+              {Object.entries(plants).map(([key, plant]) => {
+                const amt = buyAmount === -1 ? getMaxBuyable(key) : buyAmount;
+                const cost = plant.price * (amt || 1);
+                return (
+                  <div key={key} className="flex items-center justify-between p-1.5 bg-muted rounded-lg text-xs">
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-2xl">{plant.icon}</span>
+                      <div>
+                        <h3 className="font-semibold text-xs">{plant.name}</h3>
+                        <p className="text-[10px] text-muted-foreground">${plant.price} | Wert: ${plant.value} | {formatTime(plant.growTime)}</p>
+                      </div>
                     </div>
+                    <Button onClick={() => buySeed(key, amt || 1)} disabled={gameState.money < cost || amt === 0} size="sm" className="h-7 text-[10px]">
+                      {amt > 0 ? `${amt}× $${cost}` : 'Kaufen'}
+                    </Button>
                   </div>
-                  <Button onClick={() => buySeed(key)} disabled={!unlocked || gameState.money < plant.price} size="sm">
-                    Kaufen
-                  </Button>
+                );
+              })}
+            </TabsContent>
+
+            <TabsContent value="fields" className="space-y-1.5 mt-2">
+              {(() => {
+                const items = Array.from({ length: gameState.maxFields }, (_, i) => {
+                  const field = gameState.fields[i];
+                  if (field?.unlocked) return null;
+                  if (i >= fieldPrices.length) return null;
+                  return (
+                    <div key={i} className="flex items-center justify-between p-1.5 bg-muted rounded-lg text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-2xl">🚜</span>
+                        <div>
+                          <h3 className="font-semibold">Feld {i + 1}</h3>
+                          <p className="text-[10px] text-muted-foreground">${fieldPrices[i]}</p>
+                        </div>
+                      </div>
+                      <Button onClick={() => buyField(i)} disabled={gameState.money < fieldPrices[i]} size="sm" className="h-7 text-xs">Kaufen</Button>
+                    </div>
+                  );
+                }).filter(Boolean);
+                return items.length === 0
+                  ? <p className="text-center text-muted-foreground text-xs">Alle Felder gekauft!</p>
+                  : items;
+              })()}
+            </TabsContent>
+
+            <TabsContent value="special" className="space-y-1.5 mt-2">
+              <p className="text-[10px] text-muted-foreground mb-1">Rebirth-Pflanzen haben +50% bessere Varianten-Chancen</p>
+              {Object.entries(rebirthPlants).map(([key, plant]) => {
+                const unlocked = gameState.rebirths >= (plant.rebirthRequired || 0);
+                const amt = buyAmount === -1 ? getMaxBuyable(key) : buyAmount;
+                const cost = plant.price * (amt || 1);
+                return (
+                  <div key={key} className={`flex items-center justify-between p-1.5 bg-muted rounded-lg text-xs ${!unlocked ? 'opacity-40' : ''}`}>
+                    <div className="flex items-center gap-1.5">
+                      <span className="text-2xl">{plant.icon}</span>
+                      <div>
+                        <h3 className="font-semibold text-xs">{plant.name}</h3>
+                        <p className="text-[10px] text-muted-foreground">${plant.price} | Wert: ${plant.value} | {formatTime(plant.growTime)}</p>
+                        {!unlocked && <p className="text-[10px] text-destructive font-bold">🔒 {plant.rebirthRequired} Rebirths nötig</p>}
+                      </div>
+                    </div>
+                    <Button onClick={() => buySeed(key, amt || 1)}
+                      disabled={!unlocked || gameState.money < cost || amt === 0}
+                      size="sm" className="h-7 text-[10px]">
+                      {unlocked ? (amt > 0 ? `${amt}× $${cost}` : 'Kaufen') : '🔒'}
+                    </Button>
+                  </div>
+                );
+              })}
+            </TabsContent>
+          </Tabs>
+        </DialogContent>
+      </Dialog>
+
+      {/* Water Upgrade Modal */}
+      <Dialog open={waterUpgradeModal} onOpenChange={setWaterUpgradeModal}>
+        <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>💧 Gießkannen-Upgrades</DialogTitle></DialogHeader>
+          <div className="p-2 bg-blue-50 rounded-lg mb-2 text-xs space-y-0.5">
+            <p>⏱️ Dauer: <strong>{waterStats.duration / 1000}s</strong></p>
+            <p>💪 Stärke: <strong>×{effectiveWaterSpeed.toFixed(1)}</strong></p>
+            <p>🎯 Reichweite: <strong>{waterStats.range} Felder</strong></p>
+            <p>⚡ Cooldown: <strong>{waterStats.cooldown / 1000}s</strong></p>
+          </div>
+          <div className="space-y-2">
+            {waterUpgradeDefs.map(def => {
+              const level = gameState.waterUpgrades[def.key];
+              const isMax = level >= def.maxLevel;
+              const cost = isMax ? 0 : def.costs[level];
+              return (
+                <div key={def.key} className="p-2 bg-muted rounded-lg">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h3 className="font-semibold text-xs">{def.name} (Lv. {level}/{def.maxLevel})</h3>
+                      {!isMax && <p className="text-[10px] text-muted-foreground">{def.description(level)}</p>}
+                      {isMax && <p className="text-[10px] text-farm-money font-bold">✅ Max</p>}
+                    </div>
+                    {!isMax && (
+                      <Button onClick={() => buyWaterUpgrade(def.key)} disabled={gameState.money < cost}
+                        size="sm" className="h-7 text-[10px]">
+                        ${cost}
+                      </Button>
+                    )}
+                  </div>
+                  <Progress value={(level / def.maxLevel) * 100} className="h-1.5 mt-1" />
                 </div>
               );
             })}
@@ -734,128 +968,56 @@ export default function FarmGame() {
         </DialogContent>
       </Dialog>
 
-      {/* Field Shop Modal - with water upgrade */}
-      <Dialog open={fieldShopModal} onOpenChange={setFieldShopModal}>
-        <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>🚜 Felder & Upgrades</DialogTitle></DialogHeader>
-          <div className="space-y-2">
-            {/* Water upgrade section */}
-            <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
-              <h3 className="font-bold text-sm mb-2">💧 Gießkannen-Upgrade</h3>
-              <p className="text-xs text-muted-foreground mb-1">
-                Level: {gameState.waterLevel} ({waterUpgrades[gameState.waterLevel].label})
-              </p>
-              <p className="text-xs text-muted-foreground mb-1">
-                Dauer: {waterStats.duration / 1000}s | Cooldown: {waterStats.cooldown / 1000}s | Speed: ×{waterStats.speedMult}
-              </p>
-              {gameState.waterLevel < waterUpgrades.length - 1 ? (
-                <>
-                  <p className="text-xs text-muted-foreground mb-2">
-                    Nächstes Level: {waterUpgrades[gameState.waterLevel + 1].label} — ${waterUpgrades[gameState.waterLevel + 1].cost}
-                  </p>
-                  <Button
-                    onClick={upgradeWater}
-                    disabled={gameState.money < waterUpgrades[gameState.waterLevel + 1].cost}
-                    size="sm"
-                    className="w-full"
-                  >
-                    💧 Upgraden (${waterUpgrades[gameState.waterLevel + 1].cost})
-                  </Button>
-                </>
-              ) : (
-                <p className="text-xs text-farm-money font-bold">✅ Maximales Level erreicht!</p>
-              )}
-            </div>
-
-            <div className="border-t pt-2 mt-2">
-              <h3 className="font-bold text-sm mb-2">🚜 Felder kaufen</h3>
-            </div>
-
-            {(() => {
-              const fieldItems = Array.from({ length: gameState.maxFields }, (_, i) => {
-                const field = gameState.fields[i];
-                if (field?.unlocked) return null;
-                if (i >= fieldPrices.length) return null;
-                return (
-                  <div key={i} className="flex items-center justify-between p-2 bg-muted rounded-lg text-sm">
-                    <div className="flex items-center gap-2">
-                      <span className="text-3xl">🚜</span>
-                      <div>
-                        <h3 className="font-semibold">Feld {i + 1}</h3>
-                        <p className="text-xs text-muted-foreground">Preis: ${fieldPrices[i]}</p>
-                      </div>
-                    </div>
-                    <Button onClick={() => buyField(i)} disabled={gameState.money < fieldPrices[i]} size="sm">Kaufen</Button>
-                  </div>
-                );
-              }).filter(Boolean);
-              return fieldItems.length === 0 ? (
-                <p className="text-center text-muted-foreground text-sm">Alle Felder gekauft!</p>
-              ) : fieldItems;
-            })()}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Seed Inventory Modal */}
-      <Dialog open={inventoryModal} onOpenChange={setInventoryModal}>
-        <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
-          <DialogHeader><DialogTitle>📦 Samen-Inventar</DialogTitle></DialogHeader>
-          <div className="space-y-2">
-            {Object.entries(gameState.inventory).filter(([_, c]) => c > 0).length === 0 ? (
-              <p className="text-center text-muted-foreground text-sm">Leer! Kaufe Samen im Händler.</p>
-            ) : (
-              Object.entries(gameState.inventory).filter(([_, c]) => c > 0).map(([key, count]) => {
-                const plant = allPlants[key];
-                if (!plant) return null;
-                return (
-                  <div key={key} className="flex items-center gap-2 p-2 bg-muted rounded-lg text-sm">
-                    <span className="text-3xl">{plant.icon}</span>
-                    <div>
-                      <h3 className="font-semibold">{plant.name} ×{count}</h3>
-                      <p className="text-xs text-muted-foreground">Wert: ${plant.value} | {formatTime(plant.growTime)}</p>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </DialogContent>
-      </Dialog>
-
-      {/* Harvested Inventory Modal */}
+      {/* Harvested Inventory Modal - with Sell All */}
       <Dialog open={harvestedModal} onOpenChange={setHarvestedModal}>
         <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>🌾 Ernte-Inventar</DialogTitle></DialogHeader>
-          <div className="space-y-2">
+
+          {Object.keys(harvestedInventory).length > 0 && (
+            <div className="flex gap-1 flex-wrap mb-2">
+              {(['all', 'normal', 'rare'] as const).map(filter => {
+                const { value, count } = getTotalSellValue(filter);
+                if (count === 0) return null;
+                const labels = { all: 'Alles', normal: 'Nur Normal', rare: 'Nur Selten' };
+                return (
+                  <Button key={filter} size="sm" variant="outline" onClick={() => sellAll(filter)}
+                    className="text-[10px] h-7 flex-1">
+                    {labels[filter]} ({count}× ${value})
+                  </Button>
+                );
+              })}
+            </div>
+          )}
+
+          <div className="space-y-1.5">
             {Object.keys(harvestedInventory).length === 0 ? (
-              <p className="text-center text-muted-foreground text-sm">Keine Ernte vorhanden.</p>
+              <p className="text-center text-muted-foreground text-xs">Keine Ernte.</p>
             ) : (
               Object.entries(harvestedInventory).map(([plantKey, plantVariants]) => {
-                const plant = allPlants[plantKey];
+                const plant = allPlants[plantKey] || { ...plants, ...rebirthPlants }[plantKey];
                 if (!plant) return null;
-                return Object.entries(plantVariants).map(([vKey, count]) => {
+                return Object.entries(plantVariants).map(([vKeyStr, count]) => {
                   if (count <= 0) return null;
-                  const variant = variants[vKey];
-                  const unitValue = calculateValue(plant.value, vKey, gameState.rebirths);
+                  const display = getVariantDisplay(vKeyStr);
+                  const unitValue = getVariantValueFromKey(plantKey, vKeyStr);
                   return (
-                    <div key={`${plantKey}-${vKey}`} className="flex items-center justify-between p-2 bg-muted rounded-lg text-sm">
-                      <div className="flex items-center gap-2">
-                        <span className="text-2xl">{plant.icon}</span>
+                    <div key={`${plantKey}-${vKeyStr}`} className="flex items-center justify-between p-1.5 bg-muted rounded-lg text-xs">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-xl">{plant.icon}</span>
                         <div>
-                          <h3 className={`font-semibold text-sm ${variant.color}`}>
-                            {variant.emoji} {plant.name} ({variant.name})
+                          <h3 className={`font-semibold text-xs ${display.color}`}>
+                            {display.emoji} {plant.name} {display.label !== 'Normal' ? `(${display.label})` : ''}
                           </h3>
-                          <p className="text-[11px] text-muted-foreground">×{count} | ${unitValue}/Stück</p>
+                          <p className="text-[10px] text-muted-foreground">×{count} | ${unitValue}/Stk</p>
                         </div>
                       </div>
-                      <div className="flex flex-col gap-1">
-                        <Button size="sm" className="text-xs h-7" onClick={() => sellHarvested(plantKey, vKey, 1)}>
-                          1x ${unitValue}
+                      <div className="flex gap-1">
+                        <Button size="sm" className="text-[10px] h-6 px-2" onClick={() => sellHarvested(plantKey, vKeyStr, 1)}>
+                          1× ${unitValue}
                         </Button>
                         {count > 1 && (
-                          <Button size="sm" className="text-xs h-7" onClick={() => sellHarvested(plantKey, vKey, count)}>
-                            Alle ${unitValue * count}
+                          <Button size="sm" className="text-[10px] h-6 px-2" onClick={() => sellHarvested(plantKey, vKeyStr, count)}>
+                            All ${unitValue * count}
                           </Button>
                         )}
                       </div>
@@ -872,32 +1034,28 @@ export default function FarmGame() {
       <Dialog open={indexModal} onOpenChange={setIndexModal}>
         <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>📖 Index ({discoveredCount}/{totalVariants} - {Math.round(discoveredCount / totalVariants * 100)}%)</DialogTitle>
+            <DialogTitle>📖 Index ({discoveredCount}/{totalVariantsCount} - {Math.round(indexCompletion * 100)}%)</DialogTitle>
           </DialogHeader>
-          <div className="space-y-3">
-            {Object.entries(allPlants).map(([plantKey, plant]) => {
+          <div className="space-y-2">
+            {Object.entries({ ...plants, ...rebirthPlants }).map(([plantKey, plant]) => {
               const discovered = gameState.discoveredVariants[plantKey] || [];
-              const plantProgress = discovered.length;
               return (
                 <div key={plantKey} className="p-2 bg-muted rounded-lg">
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="text-2xl">{plant.icon}</span>
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-xl">{plant.icon}</span>
                     <div className="flex-1">
-                      <h3 className="font-semibold text-sm">{plant.name} ({plantProgress}/{variantKeys.length})</h3>
-                      <Progress value={(plantProgress / variantKeys.length) * 100} className="h-2 mt-1" />
+                      <h3 className="font-semibold text-xs">{plant.name} ({discovered.length}/{variantKeys.length})</h3>
+                      <Progress value={(discovered.length / variantKeys.length) * 100} className="h-1.5 mt-0.5" />
                     </div>
                   </div>
-                  <div className="grid grid-cols-2 gap-1">
+                  <div className="grid grid-cols-2 gap-0.5">
                     {variantKeys.map(vKey => {
                       const variant = variants[vKey];
-                      const isDiscovered = discovered.includes(vKey);
-                      const value = calculateValue(plant.value, vKey, gameState.rebirths);
+                      const found = discovered.includes(vKey);
                       return (
-                        <div key={vKey} className={`text-[10px] p-1 rounded ${isDiscovered ? 'bg-card' : 'bg-card/50'}`}>
-                          {isDiscovered ? (
-                            <span className={variant.color}>
-                              {variant.emoji} {variant.name} - ${value} (1:{variant.chance})
-                            </span>
+                        <div key={vKey} className={`text-[9px] p-0.5 rounded ${found ? 'bg-card' : 'bg-card/40'}`}>
+                          {found ? (
+                            <span className={variant.color}>{variant.emoji} {variant.name} ×{variant.multiplier}</span>
                           ) : (
                             <span className="text-muted-foreground">??? (1:{variant.chance})</span>
                           )}
@@ -912,43 +1070,72 @@ export default function FarmGame() {
         </DialogContent>
       </Dialog>
 
-      {/* Settings Modal - without rebirth, with notifications toggle */}
+      {/* Rebirth Shop Modal */}
+      <Dialog open={rebirthShopModal} onOpenChange={setRebirthShopModal}>
+        <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
+          <DialogHeader><DialogTitle>🪙 Rebirth-Shop</DialogTitle></DialogHeader>
+          <p className="text-xs text-muted-foreground mb-2">
+            🪙 Tokens: <strong>{gameState.rebirthTokens}</strong> | Permanente Upgrades (bleiben nach Rebirth)
+          </p>
+          <div className="space-y-2">
+            {rebirthShopDefs.map(def => {
+              const level = gameState.rebirthShop[def.key];
+              const isMax = level >= def.maxLevel;
+              const cost = isMax ? 0 : def.costs[level];
+              return (
+                <div key={def.key} className="p-2 bg-muted rounded-lg">
+                  <div className="flex justify-between items-center">
+                    <div>
+                      <h3 className="font-semibold text-xs">{def.emoji} {def.name} (Lv. {level}/{def.maxLevel})</h3>
+                      {!isMax && <p className="text-[10px] text-muted-foreground">{def.description(level)}</p>}
+                      {isMax && <p className="text-[10px] text-farm-money font-bold">✅ Max</p>}
+                    </div>
+                    {!isMax && (
+                      <Button onClick={() => buyRebirthUpgrade(def.key)}
+                        disabled={gameState.rebirthTokens < cost}
+                        size="sm" className="h-7 text-[10px]">
+                        🪙{cost}
+                      </Button>
+                    )}
+                  </div>
+                  <Progress value={(level / def.maxLevel) * 100} className="h-1.5 mt-1" />
+                </div>
+              );
+            })}
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Settings Modal */}
       <Dialog open={settingsModal} onOpenChange={setSettingsModal}>
         <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>⚙️ Einstellungen</DialogTitle></DialogHeader>
-          <div className="space-y-3">
-            {/* Notifications toggle */}
+          <div className="space-y-2">
             <div className="flex items-center justify-between p-2 bg-muted rounded-lg">
               <div>
-                <h3 className="font-semibold text-sm">🔔 Benachrichtigungen</h3>
-                <p className="text-xs text-muted-foreground">Toast-Nachrichten anzeigen</p>
+                <h3 className="font-semibold text-xs">🔔 Benachrichtigungen</h3>
+                <p className="text-[10px] text-muted-foreground">Toast-Nachrichten</p>
               </div>
-              <Switch
-                checked={soundSettings.notifications}
-                onCheckedChange={(checked) => setSoundSettings(prev => ({ ...prev, notifications: checked }))}
-              />
+              <Switch checked={soundSettings.notifications}
+                onCheckedChange={(c) => setSoundSettings(prev => ({ ...prev, notifications: c }))} />
             </div>
-
-            <div className="border-t pt-2" />
-
+            <div className="border-t pt-1" />
             {([
-              { key: 'music' as const, label: '🎵 Hintergrundmusik', desc: 'Farm-Musik' },
-              { key: 'water' as const, label: '💧 Gießen-Sound', desc: 'Beim Gießen' },
-              { key: 'harvest' as const, label: '🌾 Ernte-Sound', desc: 'Beim Ernten' },
-              { key: 'buy' as const, label: '🛒 Kauf-Sound', desc: 'Beim Kaufen' },
-              { key: 'drop' as const, label: '✨ Drop-Sound', desc: 'Seltene Varianten' },
-              { key: 'event' as const, label: '🎉 Event-Sound', desc: 'Event-Start' },
-              { key: 'rebirth' as const, label: '🔄 Rebirth-Sound', desc: 'Beim Rebirth' },
+              { key: 'music' as const, label: '🎵 Musik', desc: 'Hintergrund' },
+              { key: 'water' as const, label: '💧 Gießen', desc: 'Sound' },
+              { key: 'harvest' as const, label: '🌾 Ernte', desc: 'Sound' },
+              { key: 'buy' as const, label: '🛒 Kauf', desc: 'Sound' },
+              { key: 'drop' as const, label: '✨ Drop', desc: 'Selten' },
+              { key: 'event' as const, label: '🎉 Event', desc: 'Start' },
+              { key: 'rebirth' as const, label: '🔄 Rebirth', desc: 'Sound' },
             ]).map(({ key, label, desc }) => (
-              <div key={key} className="flex items-center justify-between p-2 bg-muted rounded-lg">
+              <div key={key} className="flex items-center justify-between p-1.5 bg-muted rounded-lg">
                 <div>
-                  <h3 className="font-semibold text-sm">{label}</h3>
-                  <p className="text-xs text-muted-foreground">{desc}</p>
+                  <h3 className="font-semibold text-xs">{label}</h3>
+                  <p className="text-[10px] text-muted-foreground">{desc}</p>
                 </div>
-                <Switch
-                  checked={soundSettings[key]}
-                  onCheckedChange={(checked) => setSoundSettings(prev => ({ ...prev, [key]: checked }))}
-                />
+                <Switch checked={soundSettings[key]}
+                  onCheckedChange={(c) => setSoundSettings(prev => ({ ...prev, [key]: c }))} />
               </div>
             ))}
           </div>
@@ -959,18 +1146,19 @@ export default function FarmGame() {
       <Dialog open={rebirthModal} onOpenChange={setRebirthModal}>
         <DialogContent className="max-w-[85vw]">
           <DialogHeader><DialogTitle>🔄 Rebirth</DialogTitle></DialogHeader>
-          <div className="text-sm space-y-2">
-            <p>Rebirths: <strong>{gameState.rebirths}</strong> | Multiplikator: <strong>×{rebirthMulti.toFixed(1)}</strong></p>
+          <div className="text-xs space-y-1.5">
+            <p>Rebirths: <strong>{gameState.rebirths}</strong> | Multi: <strong>×{rebirthMulti.toFixed(1)}</strong></p>
             <p>Kosten: <strong>${rebirthCost.toLocaleString()}</strong></p>
-            <div className="border-t pt-2 mt-2">
-              <p>Du wirst <strong>Geld, Felder und Inventar</strong> verlieren.</p>
-              <p>Du behältst: <strong>Index-Fortschritt</strong>, <strong>Rebirth-Pflanzen</strong> und <strong>Gießkannen-Level</strong>.</p>
-              <p>Neuer Multiplikator: <strong>×{(1 + 0.1 * (gameState.rebirths + 1)).toFixed(1)}</strong></p>
+            <p>Du erhältst: <strong>🪙 {nextTokens} Token{nextTokens > 1 ? 's' : ''}</strong></p>
+            <div className="border-t pt-1.5 mt-1.5">
+              <p className="text-destructive font-bold">Verlierst: Geld, Felder, Inventar, Ernte</p>
+              <p className="text-farm-money font-bold">Behältst: Index, Rebirth-Shop, Tokens</p>
+              <p>Neuer Multi: <strong>×{(1 + 0.1 * (gameState.rebirths + 1)).toFixed(1)}</strong></p>
             </div>
           </div>
-          <div className="flex gap-2 mt-4">
-            <Button variant="outline" onClick={() => setRebirthModal(false)} className="flex-1">Abbrechen</Button>
-            <Button variant="destructive" onClick={doRebirth} disabled={gameState.money < rebirthCost} className="flex-1">
+          <div className="flex gap-2 mt-3">
+            <Button variant="outline" onClick={() => setRebirthModal(false)} className="flex-1 text-xs">Nein</Button>
+            <Button variant="destructive" onClick={doRebirth} disabled={gameState.money < rebirthCost} className="flex-1 text-xs">
               🔄 Rebirth! (${rebirthCost.toLocaleString()})
             </Button>
           </div>
@@ -981,20 +1169,20 @@ export default function FarmGame() {
       <Dialog open={plantSelectionModal.show} onOpenChange={(open) => setPlantSelectionModal({ show: open, fieldIndex: -1 })}>
         <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>🌱 Was pflanzen?</DialogTitle></DialogHeader>
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             {Object.entries(gameState.inventory).filter(([_, c]) => c > 0).map(([key, count]) => {
               const plant = allPlants[key];
               if (!plant) return null;
               return (
-                <div key={key} className="flex items-center justify-between p-2 bg-muted rounded-lg text-sm">
-                  <div className="flex items-center gap-2">
-                    <span className="text-3xl">{plant.icon}</span>
+                <div key={key} className="flex items-center justify-between p-1.5 bg-muted rounded-lg text-xs">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-2xl">{plant.icon}</span>
                     <div>
                       <h3 className="font-semibold">{plant.name} ×{count}</h3>
-                      <p className="text-xs text-muted-foreground">{formatTime(plant.growTime)}</p>
+                      <p className="text-[10px] text-muted-foreground">{formatTime(plant.growTime)}</p>
                     </div>
                   </div>
-                  <Button onClick={() => plantSeed(key, plantSelectionModal.fieldIndex)} size="sm">Pflanzen</Button>
+                  <Button onClick={() => plantSeed(key, plantSelectionModal.fieldIndex)} size="sm" className="h-7 text-xs">Pflanzen</Button>
                 </div>
               );
             })}
@@ -1002,20 +1190,22 @@ export default function FarmGame() {
         </DialogContent>
       </Dialog>
 
-      {/* Variant Popup with scale-bounce animation */}
+      {/* Variant Popup - stacked variants */}
       <Dialog open={!!variantPopup?.show} onOpenChange={() => setVariantPopup(null)}>
         <DialogContent className="max-w-[80vw] text-center animate-scale-bounce">
-          <div className="space-y-3 py-4">
-            <div className="text-6xl">{allPlants[variantPopup?.plantKey || '']?.icon}</div>
-            <div className={`text-2xl font-bold ${variants[variantPopup?.variant || 'normal']?.color}`}>
-              {variants[variantPopup?.variant || 'normal']?.emoji} {variants[variantPopup?.variant || 'normal']?.name}!
-            </div>
-            <div className="text-lg font-semibold">{allPlants[variantPopup?.plantKey || '']?.name}</div>
-            <div className="text-xl text-farm-money font-bold">Wert: ${variantPopup?.value}</div>
-            <div className="text-xs text-muted-foreground">
-              Chance: 1 in {variants[variantPopup?.variant || 'normal']?.chance}
-            </div>
-            <Button onClick={() => setVariantPopup(null)} className="w-full">Super! 🎉</Button>
+          <div className="space-y-2 py-3">
+            <div className="text-5xl">{allPlants[variantPopup?.plantKey || '']?.icon}</div>
+            {variantPopup?.variants.map((vKey, i) => (
+              <div key={i} className={`text-xl font-bold ${variants[vKey]?.color}`}>
+                {variants[vKey]?.emoji} {variants[vKey]?.name}!
+              </div>
+            ))}
+            {(variantPopup?.variants.length || 0) > 1 && (
+              <div className="text-xs text-purple-500 font-bold animate-pulse">🔥 MULTI-STACK!</div>
+            )}
+            <div className="text-sm font-semibold">{allPlants[variantPopup?.plantKey || '']?.name}</div>
+            <div className="text-lg text-farm-money font-bold">Wert: ${variantPopup?.value}</div>
+            <Button onClick={() => setVariantPopup(null)} className="w-full" size="sm">Super! 🎉</Button>
           </div>
         </DialogContent>
       </Dialog>
