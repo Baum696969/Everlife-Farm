@@ -11,7 +11,7 @@ import { useToast } from '@/hooks/use-toast';
 import { useFarmSounds } from '@/hooks/use-farm-sounds';
 import { rebirthMilestones } from '@/lib/farm-milestones';
 import TutorialModal from '@/components/TutorialModal';
-import FarmerPanel, { getFarmerConfig } from '@/components/FarmerPanel';
+import FarmerPanel, { getFarmerConfig, getFarmerUpgradeCost, type FarmerHarvestSummary } from '@/components/FarmerPanel';
 import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState, AutoSellMode, FarmerState } from '@/lib/farm-types';
 import {
   plants, rebirthPlants, getAllPlants, variants, variantKeys,
@@ -75,6 +75,8 @@ function createDefaultState(rebirthShop?: RebirthShopState, rebirths?: number, r
     lastPlanted: {},
     tutorialCompleted: false,
     farmer: { ...defaultFarmer },
+    seenMilestones: [],
+    disableMilestonePopups: false,
   };
 }
 
@@ -120,6 +122,8 @@ export default function FarmGame() {
   const [adminModal, setAdminModal] = useState(false);
   const [cheatMode, setCheatMode] = useState(false);
   const [keepMoneyOnRebirth, setKeepMoneyOnRebirth] = useState(false);
+  const [milestonePopup, setMilestonePopup] = useState<{ key: string; name: string; description: string; icon: string; rebirth: number } | null>(null);
+  const [farmerHarvestSummary, setFarmerHarvestSummary] = useState<FarmerHarvestSummary | null>(null);
   const versionClickRef = useRef(0);
   const versionClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   
@@ -271,6 +275,9 @@ export default function FarmGame() {
         if (!loaded.lastPlanted) loaded.lastPlanted = {};
         if (loaded.tutorialCompleted === undefined) loaded.tutorialCompleted = false;
         if (!loaded.farmer) loaded.farmer = { ...defaultFarmer };
+        // Update 5 migration
+        if (!loaded.seenMilestones) loaded.seenMilestones = [];
+        if (loaded.disableMilestonePopups === undefined) loaded.disableMilestonePopups = false;
         // Farmer offline progress
         if (loaded.farmer?.slots?.length > 0) {
           loaded.farmer.slots = loaded.farmer.slots.map(slot => {
@@ -644,13 +651,12 @@ export default function FarmGame() {
   };
 
   const upgradeFarmer = () => {
-    const nextLevel = gameState.farmer.level + 1;
-    if (nextLevel > 5) return;
-    const config = getFarmerConfig(nextLevel);
-    if (!config) return;
-    const cost = config.cost;
+    const currentLevel = gameState.farmer.level;
+    if (currentLevel >= 9999) return;
+    const cost = getFarmerUpgradeCost(currentLevel);
     if (gameState.rebirthTokens < cost) return;
     playSound('buy');
+    const nextLevel = currentLevel + 1;
     setGameState(prev => ({
       ...prev,
       rebirthTokens: prev.rebirthTokens - cost,
@@ -665,21 +671,28 @@ export default function FarmGame() {
     if (!plant) return;
     if ((gameState.inventory[plantKey] || 0) < amount) return;
     const config = getFarmerConfig(gameState.farmer.level);
-    if (gameState.farmer.slots.length >= config.slots) return;
+    const slotsLeft = config.slots - gameState.farmer.slots.length;
+    const actualAmount = Math.min(amount, slotsLeft);
+    if (actualAmount <= 0) return;
 
     playSound('plant');
     const cappedGrowTime = Math.min(plant.growTime, MAX_GROW_TIME);
     const duration = cappedGrowTime * config.timeMult;
+    const now = Date.now();
+
+    const newSlots = Array.from({ length: actualAmount }, (_, i) => ({
+      plantKey, startTime: now + i * 100, duration, done: false,
+    }));
 
     setGameState(prev => ({
       ...prev,
-      inventory: { ...prev.inventory, [plantKey]: prev.inventory[plantKey] - amount },
+      inventory: { ...prev.inventory, [plantKey]: prev.inventory[plantKey] - actualAmount },
       farmer: {
         ...prev.farmer,
-        slots: [...prev.farmer.slots, { plantKey, startTime: Date.now(), duration, done: false }],
+        slots: [...prev.farmer.slots, ...newSlots],
       },
     }));
-    notify({ title: `👨‍🌾 ${plant.name} übergeben!` });
+    notify({ title: `👨‍🌾 ${actualAmount}× ${plant.name} übergeben!` });
     saveGame();
   };
 
@@ -698,6 +711,28 @@ export default function FarmGame() {
     const variantBonus = gameState.rebirthShop.variantChance + (goldMult > 1 ? 10 : 0);
     const variantResult = rollStackedVariants(slot.plantKey, plant, activeEvent, variantBonus);
     const storeKey = variantResult.length > 1 ? variantResult.join('+') : variantResult[0];
+    const value = calculateStackedValue(plant.value, variantResult, gameState.rebirths);
+
+    // Build summary item
+    const summaryItem = {
+      plantKey: slot.plantKey,
+      plantName: plant.name,
+      icon: plant.icon,
+      variants: storeKey,
+      count: 1,
+      value,
+    };
+
+    // Show harvest summary
+    setFarmerHarvestSummary(prev => {
+      if (!prev) return { items: [summaryItem], totalValue: value };
+      const existing = prev.items.find(i => i.plantKey === summaryItem.plantKey && i.variants === summaryItem.variants);
+      if (existing) {
+        existing.count += 1;
+        return { items: [...prev.items], totalValue: prev.totalValue + value };
+      }
+      return { items: [...prev.items, summaryItem], totalValue: prev.totalValue + value };
+    });
 
     setHarvestedInventory(hi => {
       const plantHarvest = { ...(hi[slot.plantKey] || {}) };
@@ -718,7 +753,6 @@ export default function FarmGame() {
       return { ...prev, discoveredVariants: newDiscovered, farmer: { ...prev.farmer, slots: newSlots } };
     });
 
-    notify({ title: `👨‍🌾 ${plant.name} abgeholt!` });
     saveGame();
   };
 
@@ -728,7 +762,31 @@ export default function FarmGame() {
       .map((s, i) => (now - s.startTime >= s.duration ? i : -1))
       .filter(i => i >= 0)
       .reverse();
+    setFarmerHarvestSummary(null); // Reset before batch
     doneIndices.forEach(i => collectFarmerSlot(i));
+  };
+
+  const sellFarmerHarvest = () => {
+    if (!farmerHarvestSummary) return;
+    playSound('sell');
+    // Remove from harvested inventory and add money
+    let totalValue = 0;
+    setHarvestedInventory(prev => {
+      const next = { ...prev };
+      for (const item of farmerHarvestSummary.items) {
+        if (next[item.plantKey]?.[item.variants]) {
+          next[item.plantKey][item.variants] -= item.count;
+          if (next[item.plantKey][item.variants] <= 0) delete next[item.plantKey][item.variants];
+          if (Object.keys(next[item.plantKey]).length === 0) delete next[item.plantKey];
+        }
+        totalValue += item.value * item.count;
+      }
+      return next;
+    });
+    setGameState(prev => ({ ...prev, money: prev.money + totalValue }));
+    setFarmerHarvestSummary(null);
+    notify({ title: `💰 Farmer-Ernte verkauft! +$${totalValue}` });
+    saveGame();
   };
   const harvest = (fieldIndex: number) => {
     const field = gameState.fields[fieldIndex];
@@ -902,6 +960,9 @@ export default function FarmGame() {
     newState.farmer = gameState.farmer.unlocked ? { ...gameState.farmer, slots: [] } : gameState.farmer;
     newState.tutorialCompleted = gameState.tutorialCompleted;
     newState.lastPlanted = {}; // Reset last planted on rebirth
+    // Preserve milestone popup state
+    newState.seenMilestones = gameState.seenMilestones;
+    newState.disableMilestonePopups = gameState.disableMilestonePopups;
 
     if (keepMoneyOnRebirth) {
       newState.money = gameState.money;
@@ -912,6 +973,20 @@ export default function FarmGame() {
     setGameState(newState);
     setHarvestedInventory({});
     setRebirthModal(false);
+
+    // Check for newly unlocked milestones
+    if (!gameState.disableMilestonePopups) {
+      const newMilestone = rebirthMilestones.find(m =>
+        newRebirths >= m.rebirth &&
+        gameState.rebirths < m.rebirth &&
+        !gameState.seenMilestones.includes(m.key)
+      );
+      if (newMilestone) {
+        setMilestonePopup({ key: newMilestone.key, name: newMilestone.name, description: newMilestone.description, icon: newMilestone.icon, rebirth: newMilestone.rebirth });
+        setGameState(prev => ({ ...prev, seenMilestones: [...prev.seenMilestones, newMilestone.key] }));
+      }
+    }
+
     notify({ title: `🔄 Rebirth ${newRebirths}! +${totalTokens} Token${totalTokens > 1 ? 's' : ''}!` });
     saveGame();
   };
@@ -1596,6 +1671,7 @@ export default function FarmGame() {
             <Button variant="outline" onClick={() => setTutorialModal(true)} className="w-full text-xs h-8">
               📖 Tutorial ansehen
             </Button>
+            <p className="text-[10px] text-muted-foreground text-center mt-2">Version: {GAME_VERSION}</p>
           </div>
         </DialogContent>
       </Dialog>
@@ -1765,6 +1841,28 @@ export default function FarmGame() {
         </DialogContent>
       </Dialog>
 
+      {/* Milestone Unlock Popup */}
+      <Dialog open={!!milestonePopup} onOpenChange={() => setMilestonePopup(null)}>
+        <DialogContent className="max-w-[85vw] text-center">
+          <div className="space-y-3 py-3">
+            <div className="text-5xl">{milestonePopup?.icon}</div>
+            <h2 className="text-sm font-bold">🎉 Freigeschaltet! (Rebirth {milestonePopup?.rebirth})</h2>
+            <h3 className="text-base font-bold">{milestonePopup?.name}</h3>
+            <p className="text-xs text-muted-foreground">{milestonePopup?.description}</p>
+            <p className="text-[10px] text-muted-foreground">Du findest das im Rebirth-Menü im Pfad.</p>
+            <div className="flex gap-2">
+              <Button onClick={() => setMilestonePopup(null)} className="flex-1 text-xs">OK</Button>
+              <Button variant="outline" onClick={() => {
+                setGameState(prev => ({ ...prev, disableMilestonePopups: true }));
+                setMilestonePopup(null);
+              }} className="flex-1 text-xs text-[10px]">
+                Nicht mehr anzeigen
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       {/* Farmer Panel */}
       <FarmerPanel
         open={farmerModal}
@@ -1778,6 +1876,9 @@ export default function FarmGame() {
         onCollect={collectFarmerSlot}
         onCollectAll={collectAllFarmerSlots}
         formatTime={formatTime}
+        harvestSummary={farmerHarvestSummary}
+        onDismissSummary={() => setFarmerHarvestSummary(null)}
+        onSellSummary={sellFarmerHarvest}
       />
     </div>
   );

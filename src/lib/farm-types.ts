@@ -60,7 +60,7 @@ export interface FarmerSlot {
 
 export interface FarmerState {
   unlocked: boolean;
-  level: number; // 1-5
+  level: number; // 1-9999
   slots: FarmerSlot[];
 }
 
@@ -88,6 +88,9 @@ export interface GameState {
   lastPlanted: Record<number, string>; // fieldIndex -> plantKey (for replant)
   tutorialCompleted: boolean;
   farmer: FarmerState;
+  // Update 5
+  seenMilestones: string[]; // milestone keys already shown as popup
+  disableMilestonePopups: boolean;
 }
 
 export interface HarvestResult {
