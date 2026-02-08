@@ -1310,13 +1310,13 @@ export default function FarmGame() {
       {/* Bottom Navigation - 7 tabs */}
       <div className="fixed bottom-0 left-0 right-0 bg-card/95 p-1.5 flex justify-around shadow-lg z-50">
         {[
+          { icon: '📖', label: 'Index', onClick: () => setIndexModal(true) },
+          { icon: '🔄', label: 'Rebirth', onClick: () => setRebirthModal(true), badge: gameState.rebirths > 0 ? gameState.rebirths : undefined },
           { icon: '🛒', label: 'Händler', onClick: () => setShopModal(true) },
           { icon: '💧', label: 'Gießkanne', onClick: () => setWaterUpgradeModal(true) },
           { icon: '🌾', label: 'Ernte', onClick: () => setHarvestedModal(true), badge: totalHarvestedCount > 0 ? totalHarvestedCount : undefined },
-          { icon: '📖', label: 'Index', onClick: () => setIndexModal(true) },
           { icon: '👨‍🌾', label: 'Farmer', onClick: () => setFarmerModal(true), badge: gameState.farmer.slots.filter(s => Date.now() - s.startTime >= s.duration).length > 0 ? gameState.farmer.slots.filter(s => Date.now() - s.startTime >= s.duration).length : undefined },
           { icon: '🪙', label: 'R-Shop', onClick: () => setRebirthShopModal(true), badge: gameState.rebirthTokens > 0 ? gameState.rebirthTokens : undefined },
-          { icon: '🔄', label: 'Rebirth', onClick: () => setRebirthModal(true), badge: gameState.rebirths > 0 ? gameState.rebirths : undefined },
         ].map(({ icon, label, onClick, badge }) => (
           <Button key={label} variant="ghost" onClick={onClick}
             className="flex flex-col items-center gap-0 min-h-[44px] min-w-[36px] px-0.5 relative text-xs h-auto py-1">
