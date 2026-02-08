@@ -1,13 +1,29 @@
 import { useState } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
+import { Slider } from '@/components/ui/slider';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { musicTracks } from '@/hooks/use-farm-sounds';
+import type { SoundSettings, MusicTrack } from '@/lib/farm-types';
 
 interface TutorialModalProps {
   open: boolean;
   onClose: () => void;
+  soundSettings?: SoundSettings;
+  onSoundSettingsChange?: (settings: SoundSettings) => void;
+  previewTrack?: (key: MusicTrack) => void;
 }
 
-const tutorialPages = [
+interface TutorialPage {
+  title: string;
+  icon: string;
+  content: string[];
+  tip: string;
+  interactive?: 'music' | 'abilities';
+}
+
+const tutorialPages: TutorialPage[] = [
   {
     title: '🌾 Grundlagen',
     icon: '💰',
@@ -35,11 +51,10 @@ const tutorialPages = [
     icon: '🎶',
     content: [
       'Everlife Farm spielt standardmäßig entspannte Farm-Musik.',
-      'Du kannst die Musik jederzeit in den ⚙️ Einstellungen ändern.',
-      'Dort findest du verschiedene Tracks zur Auswahl.',
-      'Tippe auf „▶ Preview" um einen Track vorab zu hören.',
+      'Du kannst die Musik hier direkt einstellen oder später in den ⚙️ Einstellungen ändern.',
     ],
     tip: 'Tipp: Standard-Musik ist empfohlen für entspanntes Spielen.',
+    interactive: 'music',
   },
   {
     title: '💧 Gießkanne',
@@ -81,9 +96,20 @@ const tutorialPages = [
       '🤖 Auto-Ernte (ab Rebirth 1): Erntet automatisch 1 Pflanze/Sek.',
       '💸 Auto-Sell (ab Rebirth 25): Verkauft Ernte automatisch.',
       '💧 Auto-Gießkanne (ab Rebirth 80): Gießt smart alle 3 Sekunden.',
-      'Alle Systeme sind in den Einstellungen ⚙️ ein-/ausschaltbar.',
+      'Alle Systeme sind über ⭐ Fähigkeiten ein-/ausschaltbar.',
     ],
     tip: 'Tipp: Kombiniere Auto-Ernte mit Auto-Sell für passives Einkommen!',
+  },
+  {
+    title: '⭐ Fähigkeiten',
+    icon: '⭐',
+    content: [
+      'Im ⭐ Fähigkeiten-Menü kannst du automatische Funktionen ein- oder ausschalten.',
+      'Alles ist optional – du bestimmst, wie aktiv du spielen willst.',
+      'Neue Fähigkeiten schaltest du durch Rebirth frei.',
+    ],
+    tip: 'Tipp: Du findest den ⭐-Button oben neben den Einstellungen.',
+    interactive: 'abilities',
   },
   {
     title: '👨‍🌾 Farmer',
@@ -100,7 +126,7 @@ const tutorialPages = [
   },
 ];
 
-export default function TutorialModal({ open, onClose }: TutorialModalProps) {
+export default function TutorialModal({ open, onClose, soundSettings, onSoundSettingsChange, previewTrack }: TutorialModalProps) {
   const [page, setPage] = useState(0);
 
   const isLastPage = page === tutorialPages.length - 1;
@@ -111,10 +137,27 @@ export default function TutorialModal({ open, onClose }: TutorialModalProps) {
     onClose();
   };
 
+  const handleBack = () => {
+    if (page === 0) {
+      handleClose();
+    } else {
+      setPage(p => p - 1);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!o) handleClose(); }}>
       <DialogContent className="max-w-[95vw] max-h-[85vh] overflow-y-auto p-4">
-        <div className="text-center mb-3">
+        {/* X-button as back / close */}
+        <button
+          onClick={handleBack}
+          className="absolute top-3 left-3 w-8 h-8 rounded-full bg-muted flex items-center justify-center text-sm font-bold hover:bg-muted-foreground/20 transition-colors z-10"
+          aria-label={page === 0 ? 'Schließen' : 'Zurück'}
+        >
+          {page === 0 ? '✕' : '←'}
+        </button>
+
+        <div className="text-center mb-3 mt-2">
           <div className="text-5xl mb-2">{current.icon}</div>
           <h2 className="text-xl font-bold">{current.title}</h2>
           <p className="text-sm text-muted-foreground">Seite {page + 1} / {tutorialPages.length}</p>
@@ -125,6 +168,64 @@ export default function TutorialModal({ open, onClose }: TutorialModalProps) {
             <p key={i} className="bg-muted/50 p-2.5 rounded-lg leading-relaxed">{line}</p>
           ))}
         </div>
+
+        {/* Interactive: Music controls */}
+        {current.interactive === 'music' && soundSettings && onSoundSettingsChange && (
+          <div className="mt-3 p-3 bg-muted rounded-lg space-y-2 border border-border">
+            <div className="flex items-center justify-between">
+              <h3 className="font-semibold text-xs">🎵 Musik</h3>
+              <Switch checked={soundSettings.music}
+                onCheckedChange={(c) => onSoundSettingsChange({ ...soundSettings, music: c })} />
+            </div>
+            {soundSettings.music && (
+              <>
+                <div>
+                  <p className="text-[10px] text-muted-foreground mb-1">Lautstärke ({Math.round(soundSettings.musicVolume * 100)}%)</p>
+                  <Slider value={[soundSettings.musicVolume]} min={0} max={1} step={0.05}
+                    onValueChange={([v]) => onSoundSettingsChange({ ...soundSettings, musicVolume: v })} />
+                </div>
+                <RadioGroup value={soundSettings.musicTrack}
+                  onValueChange={(v) => onSoundSettingsChange({ ...soundSettings, musicTrack: v as MusicTrack })}>
+                  {musicTracks.map(track => (
+                    <div key={track.key} className="flex items-center justify-between p-1.5 bg-card rounded-lg">
+                      <div className="flex items-center gap-2">
+                        <RadioGroupItem value={track.key} id={`tut-track-${track.key}`} />
+                        <label htmlFor={`tut-track-${track.key}`} className="text-[11px] cursor-pointer">{track.name}</label>
+                      </div>
+                      {previewTrack && (
+                        <Button size="sm" variant="ghost" className="h-6 text-[9px] px-1.5"
+                          onClick={(e) => { e.preventDefault(); previewTrack(track.key); }}>
+                          ▶ Preview
+                        </Button>
+                      )}
+                    </div>
+                  ))}
+                </RadioGroup>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Interactive: Abilities info */}
+        {current.interactive === 'abilities' && (
+          <div className="mt-3 p-3 bg-muted rounded-lg space-y-1.5 border border-border">
+            <p className="text-[10px] text-muted-foreground">Beispiel-Fähigkeiten:</p>
+            {[
+              { icon: '🤖', name: 'Auto-Ernten', desc: 'Rebirth 1' },
+              { icon: '💸', name: 'Auto-Sell', desc: 'Rebirth 25' },
+              { icon: '💧', name: 'Auto-Gießkanne', desc: 'Rebirth 80' },
+              { icon: '🔄', name: 'Farmer-Nachpflanzen', desc: 'Farmer kaufen' },
+            ].map((item, i) => (
+              <div key={i} className="flex items-center justify-between p-1.5 bg-card rounded-lg text-xs">
+                <div className="flex items-center gap-1.5">
+                  <span>{item.icon}</span>
+                  <span className="font-semibold">{item.name}</span>
+                </div>
+                <span className="text-[10px] text-muted-foreground">{item.desc}</span>
+              </div>
+            ))}
+          </div>
+        )}
 
         {current.tip && (
           <div className="mt-3 p-2.5 bg-yellow-50 border border-yellow-200 rounded-lg text-sm text-yellow-800 leading-relaxed">
@@ -140,9 +241,6 @@ export default function TutorialModal({ open, onClose }: TutorialModalProps) {
         </div>
 
         <div className="flex gap-2 mt-3">
-          <Button variant="outline" onClick={handleClose} className="flex-1 text-xs">
-            Beenden
-          </Button>
           {!isLastPage ? (
             <Button onClick={() => setPage(p => p + 1)} className="flex-1 text-xs">
               Nächste →
