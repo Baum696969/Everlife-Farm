@@ -269,12 +269,7 @@ export default function FarmGame() {
 
   // === HARVEST LOGIC (shared by manual + auto) ===
   const doHarvest = useCallback((fieldIndex: number, isAuto: boolean = false) => {
-    // We need current state, so we use setGameState callback pattern
-    let resultPlantKey = '';
-    let resultVariants: string[] = [];
-    let resultValue = 0;
-    let hasRare = false;
-
+    // Read current state directly to avoid closure issues
     setGameState(prev => {
       const field = prev.fields[fieldIndex];
       if (!field?.planted || field.stage < 3 || field.plantTime > 0) return prev;
@@ -291,33 +286,65 @@ export default function FarmGame() {
       const idxComp = totalVariantsCount > 0 ? Object.values(prev.discoveredVariants).reduce((a, b) => a + b.length, 0) / totalVariantsCount : 0;
       const idxBonus = prev.rebirthShop.indexBonus > 0 ? 1 + (prev.rebirthShop.indexBonus * 0.01 * Math.floor(idxComp * 10)) : 1;
       const finalValue = Math.floor(value * idxBonus);
-      hasRare = variantResult.some(v => v !== 'normal');
+      const hasRare = variantResult.some(v => v !== 'normal');
 
-      resultPlantKey = field.planted;
-      resultVariants = variantResult;
-      resultValue = finalValue;
+      const plantKey = field.planted;
 
       const newFields = [...prev.fields];
       newFields[fieldIndex] = { ...newFields[fieldIndex], planted: null, plantTime: 0, stage: 0, growStartTime: 0 };
 
       const newDiscovered = { ...prev.discoveredVariants };
-      if (!newDiscovered[resultPlantKey]) newDiscovered[resultPlantKey] = [];
+      if (!newDiscovered[plantKey]) newDiscovered[plantKey] = [];
       variantResult.forEach(v => {
-        if (!newDiscovered[resultPlantKey].includes(v)) {
-          newDiscovered[resultPlantKey] = [...newDiscovered[resultPlantKey], v];
+        if (!newDiscovered[plantKey].includes(v)) {
+          newDiscovered[plantKey] = [...newDiscovered[plantKey], v];
         }
       });
 
-      // Auto-sell?
+      // Auto-sell check
       const shouldAutoSell = isAuto && prev.autoSell !== 'off' && hasMilestone(prev.rebirths, 'autoSell');
       let autoSellValue = 0;
+      let autoSold = false;
       if (shouldAutoSell) {
         const isNormal = !hasRare;
         const sell = prev.autoSell === 'all' ||
           (prev.autoSell === 'normal' && isNormal) ||
           (prev.autoSell === 'gold+' && !isNormal);
-        if (sell) autoSellValue = finalValue;
+        if (sell) {
+          autoSellValue = finalValue;
+          autoSold = true;
+        }
       }
+
+      // Side effects (scheduled outside React state)
+      setTimeout(() => {
+        playSound('harvest');
+        if (hasRare) playSound('drop');
+
+        setFlashingFields(fp => ({ ...fp, [fieldIndex]: true }));
+        setTimeout(() => setFlashingFields(fp => ({ ...fp, [fieldIndex]: false })), 400);
+
+        if (hasRare) {
+          const bestVariant = variantResult[variantResult.length - 1];
+          spawnParticles(fieldIndex, bestVariant);
+        }
+
+        // Add to harvested inventory (if not auto-sold)
+        if (!autoSold) {
+          const storeKey = variantResult.length > 1 ? variantResult.join('+') : variantResult[0];
+          setHarvestedInventory(hi => {
+            const plantHarvest = { ...(hi[plantKey] || {}) };
+            plantHarvest[storeKey] = (plantHarvest[storeKey] || 0) + 1;
+            return { ...hi, [plantKey]: plantHarvest };
+          });
+        }
+
+        if (hasRare && !isAuto) {
+          setVariantPopup({ show: true, plantKey, variants: variantResult.filter(v => v !== 'normal'), value: finalValue });
+        } else if (!isAuto) {
+          notify({ title: `${plant.name} geerntet!` });
+        }
+      }, 0);
 
       return {
         ...prev,
@@ -326,50 +353,7 @@ export default function FarmGame() {
         money: prev.money + autoSellValue,
       };
     });
-
-    // After state update, handle side effects
-    if (resultPlantKey) {
-      playSound('harvest');
-      if (hasRare) playSound('drop');
-
-      setFlashingFields(prev => ({ ...prev, [fieldIndex]: true }));
-      setTimeout(() => setFlashingFields(prev => ({ ...prev, [fieldIndex]: false })), 400);
-
-      if (hasRare) {
-        const bestVariant = resultVariants[resultVariants.length - 1];
-        spawnParticles(fieldIndex, bestVariant);
-      }
-
-      // Check auto-sell - if not auto-sold, add to harvested inventory
-      setGameState(prev => {
-        const shouldAutoSell = isAuto && prev.autoSell !== 'off' && hasMilestone(prev.rebirths, 'autoSell');
-        if (shouldAutoSell) {
-          const isNormal = !hasRare;
-          const sell = prev.autoSell === 'all' ||
-            (prev.autoSell === 'normal' && isNormal) ||
-            (prev.autoSell === 'gold+' && !isNormal);
-          if (sell) return prev; // Already sold in state update above
-        }
-        return prev;
-      });
-
-      // Store in harvested if not auto-sold
-      const storeKey = resultVariants.length > 1 ? resultVariants.join('+') : resultVariants[0];
-      setHarvestedInventory(prev => {
-        const plantHarvest = { ...(prev[resultPlantKey] || {}) };
-        plantHarvest[storeKey] = (plantHarvest[storeKey] || 0) + 1;
-        return { ...prev, [resultPlantKey]: plantHarvest };
-      });
-
-      if (hasRare && !isAuto) {
-        setVariantPopup({ show: true, plantKey: resultPlantKey, variants: resultVariants.filter(v => v !== 'normal'), value: resultValue });
-      } else if (!isAuto) {
-        notify({ title: `${allPlants[resultPlantKey]?.name} geerntet!` });
-      }
-
-      saveGame();
-    }
-  }, [activeEvent, allPlants, totalVariantsCount, playSound, spawnParticles, notify, saveGame]);
+  }, [activeEvent, totalVariantsCount, playSound, spawnParticles, notify]);
 
   // === MAIN GAME TICK ===
   useEffect(() => {
