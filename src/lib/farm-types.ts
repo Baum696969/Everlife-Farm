@@ -83,12 +83,10 @@ export type HarvestedInventory = Record<string, Record<string, number>>;
 
 export interface SoundSettings {
   music: boolean;
-  water: boolean;
-  harvest: boolean;
-  buy: boolean;
-  drop: boolean;
-  event: boolean;
-  rebirth: boolean;
+  plantSounds: boolean;
+  uiSounds: boolean;
+  eventRebirthSounds: boolean;
+  masterVolume: number; // 0-1
   notifications: boolean;
 }
 

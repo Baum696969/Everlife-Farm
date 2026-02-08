@@ -1,13 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { Button } from '@/components/ui/button';
+import { Slider } from '@/components/ui/slider';
 import { Card } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Switch } from '@/components/ui/switch';
 import { Progress } from '@/components/ui/progress';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useToast } from '@/hooks/use-toast';
 import { useFarmSounds } from '@/hooks/use-farm-sounds';
-import RebirthPathModal from '@/components/RebirthPathModal';
+import { rebirthMilestones } from '@/lib/farm-milestones';
 import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState, AutoSellMode } from '@/lib/farm-types';
 import {
   plants, rebirthPlants, getAllPlants, variants, variantKeys,
@@ -29,7 +31,7 @@ const SAVE_KEY = 'farmGame4';
 const HARVEST_KEY = 'farmHarvested4';
 
 const defaultSoundSettings: SoundSettings = {
-  music: false, water: true, harvest: true, buy: true, drop: true, event: true, rebirth: true, notifications: true,
+  music: false, plantSounds: true, uiSounds: true, eventRebirthSounds: true, masterVolume: 0.8, notifications: true,
 };
 
 const defaultWaterUpgrades: WaterUpgradeState = { duration: 0, strength: 0, range: 0, cooldownReduction: 0 };
@@ -105,7 +107,7 @@ export default function FarmGame() {
   const [rebirthModal, setRebirthModal] = useState(false);
   const [waterUpgradeModal, setWaterUpgradeModal] = useState(false);
   const [rebirthShopModal, setRebirthShopModal] = useState(false);
-  const [rebirthPathModal, setRebirthPathModal] = useState(false);
+  
   const [offlineReport, setOfflineReport] = useState<{ time: string; grown: number } | null>(null);
   const [plantSelectionModal, setPlantSelectionModal] = useState<{ show: boolean; fieldIndex: number }>({ show: false, fieldIndex: -1 });
   const [variantPopup, setVariantPopup] = useState<{ show: boolean; plantKey: string; variants: string[]; value: number } | null>(null);
@@ -261,7 +263,17 @@ export default function FarmGame() {
       const savedSounds = localStorage.getItem('farmSounds');
       if (savedSounds) {
         const parsed = JSON.parse(savedSounds);
+        // Migrate old format
+        if (parsed.water !== undefined && parsed.plantSounds === undefined) {
+          parsed.plantSounds = true;
+          parsed.uiSounds = true;
+          parsed.eventRebirthSounds = true;
+          parsed.masterVolume = 0.8;
+          delete parsed.water; delete parsed.harvest; delete parsed.buy;
+          delete parsed.drop; delete parsed.event; delete parsed.rebirth;
+        }
         if (parsed.notifications === undefined) parsed.notifications = true;
+        if (parsed.masterVolume === undefined) parsed.masterVolume = 0.8;
         setSoundSettings(parsed);
       }
     } catch { /* Fresh start */ }
@@ -318,7 +330,7 @@ export default function FarmGame() {
 
       // Side effects (scheduled outside React state)
       setTimeout(() => {
-        playSound('harvest');
+        playSound(isAuto ? 'autoHarvest' : 'harvest');
         if (hasRare) playSound('drop');
 
         setFlashingFields(fp => ({ ...fp, [fieldIndex]: true }));
@@ -499,7 +511,7 @@ export default function FarmGame() {
   // === ACTIONS ===
   const buyField = (index: number) => {
     if (gameState.money >= fieldPrices[index]) {
-      playSound('tractor');
+      playSound('buy');
       setGameState(prev => {
         const newFields = [...prev.fields];
         while (newFields.length <= index) {
@@ -581,7 +593,7 @@ export default function FarmGame() {
     const currentCount = harvestedInventory[plantKey]?.[variantKeyStr] || 0;
     if (currentCount < amount) return;
 
-    playSound('buy');
+    playSound('sell');
     const unitValue = getVariantValueFromKey(plantKey, variantKeyStr);
     const totalValue = unitValue * amount;
 
@@ -624,7 +636,7 @@ export default function FarmGame() {
     }
 
     if (totalCount === 0) return;
-    playSound('buy');
+    playSound('sell');
     setHarvestedInventory(newInventory);
     setGameState(prev => ({ ...prev, money: prev.money + totalValue }));
     notify({ title: `${totalCount}× verkauft! +$${totalValue}` });
@@ -852,15 +864,23 @@ export default function FarmGame() {
         <div className="flex items-center gap-2 flex-wrap">
           <div className="text-lg font-bold text-farm-money">💰 ${gameState.money.toLocaleString()}</div>
           {gameState.rebirths > 0 && (
-            <div className="text-[10px] bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded-full font-bold">
+            <div className="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded-full font-bold">
               🔄{gameState.rebirths} ×{rebirthMulti.toFixed(1)}
             </div>
           )}
-          {gameState.rebirthTokens > 0 && (
-            <div className="text-[10px] bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded-full font-bold">
-              🪙{gameState.rebirthTokens}
-            </div>
-          )}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div className="text-[10px] bg-secondary/20 text-secondary-foreground px-1.5 py-0.5 rounded-full font-bold cursor-help flex items-center gap-0.5">
+                  🔁 {gameState.rebirthTokens} <span className="text-[8px] opacity-60">?</span>
+                </div>
+              </TooltipTrigger>
+              <TooltipContent side="bottom" className="max-w-[200px] text-xs">
+                <p className="font-bold">Rebirth Tokens</p>
+                <p className="text-[10px] text-muted-foreground">Erhältst du durch Rebirthen. Diese Währung wird für permanente Upgrades verwendet.</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           {gameState.autoHarvest && hasMilestone(gameState.rebirths, 'autoHarvest') && (
             <div className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded-full font-bold">🤖</div>
           )}
@@ -970,7 +990,6 @@ export default function FarmGame() {
           { icon: '💧', label: 'Gießkanne', onClick: () => setWaterUpgradeModal(true) },
           { icon: '🌾', label: 'Ernte', onClick: () => setHarvestedModal(true), badge: totalHarvestedCount > 0 ? totalHarvestedCount : undefined },
           { icon: '📖', label: 'Index', onClick: () => setIndexModal(true) },
-          { icon: '🛤️', label: 'Pfad', onClick: () => setRebirthPathModal(true) },
           { icon: '🪙', label: 'R-Shop', onClick: () => setRebirthShopModal(true), badge: gameState.rebirthTokens > 0 ? gameState.rebirthTokens : undefined },
           { icon: '🔄', label: 'Rebirth', onClick: () => setRebirthModal(true), badge: gameState.rebirths > 0 ? gameState.rebirths : undefined },
         ].map(({ icon, label, onClick, badge }) => (
@@ -1259,8 +1278,7 @@ export default function FarmGame() {
         </DialogContent>
       </Dialog>
 
-      {/* Rebirth Path Modal */}
-      <RebirthPathModal open={rebirthPathModal} onOpenChange={setRebirthPathModal} rebirths={gameState.rebirths} />
+      {/* Rebirth Path Modal removed - now inline in Rebirth Modal */}
 
       {/* Rebirth Shop Modal */}
       <Dialog open={rebirthShopModal} onOpenChange={setRebirthShopModal}>
@@ -1354,14 +1372,20 @@ export default function FarmGame() {
                 onCheckedChange={(c) => setSoundSettings(prev => ({ ...prev, notifications: c }))} />
             </div>
             <div className="border-t pt-1" />
+
+            {/* Master Volume */}
+            <div className="p-2 bg-muted rounded-lg">
+              <h3 className="font-semibold text-xs mb-1">🔊 Master-Lautstärke ({Math.round(soundSettings.masterVolume * 100)}%)</h3>
+              <Slider value={[soundSettings.masterVolume]} min={0} max={1} step={0.05}
+                onValueChange={([v]) => setSoundSettings(prev => ({ ...prev, masterVolume: v }))} />
+            </div>
+
+            {/* Sound Categories */}
             {([
-              { key: 'music' as const, label: '🎵 Musik', desc: 'Hintergrund' },
-              { key: 'water' as const, label: '💧 Gießen', desc: 'Sound' },
-              { key: 'harvest' as const, label: '🌾 Ernte', desc: 'Sound' },
-              { key: 'buy' as const, label: '🛒 Kauf', desc: 'Sound' },
-              { key: 'drop' as const, label: '✨ Drop', desc: 'Selten' },
-              { key: 'event' as const, label: '🎉 Event', desc: 'Start' },
-              { key: 'rebirth' as const, label: '🔄 Rebirth', desc: 'Sound' },
+              { key: 'music' as const, label: '🎵 Musik', desc: 'Hintergrundmusik' },
+              { key: 'plantSounds' as const, label: '🌱 Pflanzen-Sounds', desc: 'Pflanzen & Ernten' },
+              { key: 'uiSounds' as const, label: '🔔 UI-Sounds', desc: 'Kaufen, Gießen, Drops' },
+              { key: 'eventRebirthSounds' as const, label: '🎉 Event & Rebirth', desc: 'Events, Rebirth, Unlocks' },
             ]).map(({ key, label, desc }) => (
               <div key={key} className="flex items-center justify-between p-1.5 bg-muted rounded-lg">
                 <div>
@@ -1376,9 +1400,9 @@ export default function FarmGame() {
         </DialogContent>
       </Dialog>
 
-      {/* Rebirth Modal - with Multi-Rebirth */}
+      {/* Rebirth Modal - with Multi-Rebirth + Inline Path */}
       <Dialog open={rebirthModal} onOpenChange={setRebirthModal}>
-        <DialogContent className="max-w-[85vw]">
+        <DialogContent className="max-w-[95vw] max-h-[85vh] overflow-y-auto">
           <DialogHeader><DialogTitle>🔄 Rebirth</DialogTitle></DialogHeader>
           <div className="text-xs space-y-1.5">
             <p>Rebirths: <strong>{gameState.rebirths}</strong> | Multi: <strong>×{rebirthMulti.toFixed(1)}</strong></p>
@@ -1429,6 +1453,54 @@ export default function FarmGame() {
                 </div>
               );
             })}
+          </div>
+
+          {/* Inline Rebirth Path */}
+          <div className="border-t pt-3 mt-3">
+            <h3 className="text-xs font-bold mb-2">🛤️ Rebirth-Pfad</h3>
+            <div className="overflow-x-auto pb-2">
+              <div className="flex items-center gap-0 min-w-max">
+                {rebirthMilestones.map((milestone, idx) => {
+                  const unlocked = gameState.rebirths >= milestone.rebirth;
+                  return (
+                    <div key={idx} className="flex items-center">
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm shrink-0 border-2 cursor-help transition-all ${
+                              unlocked
+                                ? 'bg-primary text-primary-foreground border-primary animate-pulse'
+                                : 'bg-muted border-border text-muted-foreground'
+                            }`}>
+                              {unlocked ? milestone.icon : '?'}
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="max-w-[180px]">
+                            {unlocked ? (
+                              <>
+                                <p className="font-bold text-xs">{milestone.icon} {milestone.name}</p>
+                                <p className="text-[10px] text-muted-foreground">{milestone.description}</p>
+                                <p className="text-[9px] text-primary font-bold mt-0.5">✅ Aktiv (Rebirth {milestone.rebirth})</p>
+                              </>
+                            ) : (
+                              <>
+                                <p className="font-bold text-xs">???</p>
+                                <p className="text-[10px] text-muted-foreground">Freischaltung bei Rebirth {milestone.rebirth}</p>
+                              </>
+                            )}
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                      {idx < rebirthMilestones.length - 1 && (
+                        <div className={`w-4 h-0.5 ${
+                          gameState.rebirths >= rebirthMilestones[idx + 1].rebirth ? 'bg-primary' : 'bg-border'
+                        }`} />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
           </div>
 
           <Button variant="outline" onClick={() => setRebirthModal(false)} className="w-full text-xs mt-2">Abbrechen</Button>
