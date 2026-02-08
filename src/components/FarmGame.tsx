@@ -121,6 +121,7 @@ export default function FarmGame() {
   const [farmerModal, setFarmerModal] = useState(false);
   const [adminModal, setAdminModal] = useState(false);
   const [cheatMode, setCheatMode] = useState(false);
+  const [cheatTokens, setCheatTokens] = useState(false);
   const [keepMoneyOnRebirth, setKeepMoneyOnRebirth] = useState(false);
   const [milestonePopup, setMilestonePopup] = useState<{ key: string; name: string; description: string; icon: string; rebirth: number } | null>(null);
   const [farmerHarvestSummary, setFarmerHarvestSummary] = useState<FarmerHarvestSummary | null>(null);
@@ -150,12 +151,15 @@ export default function FarmGame() {
 
   const [tick, setTick] = useState(0);
 
-  // Cheat: keep money at max
+  // Cheat: keep money/tokens at max
   useEffect(() => {
     if (cheatMode && gameState.money < 999999999) {
       setGameState(prev => ({ ...prev, money: 999999999 }));
     }
-  }, [cheatMode, gameState.money]);
+    if (cheatTokens && gameState.rebirthTokens < 999999) {
+      setGameState(prev => ({ ...prev, rebirthTokens: 999999 }));
+    }
+  }, [cheatMode, cheatTokens, gameState.money, gameState.rebirthTokens]);
 
   // Computed
   const waterStats = getWaterStats(gameState.waterUpgrades);
@@ -1111,7 +1115,7 @@ export default function FarmGame() {
             <Tooltip>
               <TooltipTrigger asChild>
                 <div className="text-[10px] bg-secondary/20 text-secondary-foreground px-1.5 py-0.5 rounded-full font-bold cursor-help flex items-center gap-0.5">
-                  🔁 {gameState.rebirthTokens} <span className="text-[8px] opacity-60">?</span>
+                  🔁 {cheatTokens ? '∞' : gameState.rebirthTokens} <span className="text-[8px] opacity-60">?</span>
                 </div>
               </TooltipTrigger>
               <TooltipContent side="bottom" className="max-w-[200px] text-xs">
@@ -1125,20 +1129,6 @@ export default function FarmGame() {
           )}
         </div>
         <div className="flex items-center gap-1.5">
-          <span
-            className="text-[8px] text-muted-foreground cursor-default select-none"
-            onClick={() => {
-              versionClickRef.current += 1;
-              if (versionClickTimerRef.current) clearTimeout(versionClickTimerRef.current);
-              versionClickTimerRef.current = setTimeout(() => { versionClickRef.current = 0; }, 3000);
-              if (versionClickRef.current >= 25) {
-                versionClickRef.current = 0;
-                setAdminModal(true);
-              }
-            }}
-          >
-            v{GAME_VERSION}
-          </span>
           <Button variant="secondary" size="icon" className="rounded-full h-8 w-8" onClick={() => setSettingsModal(true)}>
             ⚙️
           </Button>
@@ -1671,7 +1661,18 @@ export default function FarmGame() {
             <Button variant="outline" onClick={() => setTutorialModal(true)} className="w-full text-xs h-8">
               📖 Tutorial ansehen
             </Button>
-            <p className="text-[10px] text-muted-foreground text-center mt-2">Version: {GAME_VERSION}</p>
+            <p
+              className="text-[10px] text-muted-foreground text-center mt-2 cursor-default select-none"
+              onClick={() => {
+                versionClickRef.current += 1;
+                if (versionClickTimerRef.current) clearTimeout(versionClickTimerRef.current);
+                versionClickTimerRef.current = setTimeout(() => { versionClickRef.current = 0; }, 3000);
+                if (versionClickRef.current >= 25) {
+                  versionClickRef.current = 0;
+                  setAdminModal(true);
+                }
+              }}
+            >Version: {GAME_VERSION}</p>
           </div>
         </DialogContent>
       </Dialog>
@@ -1689,6 +1690,16 @@ export default function FarmGame() {
               <Switch checked={cheatMode} onCheckedChange={(c) => {
                 setCheatMode(c);
                 if (c) setGameState(prev => ({ ...prev, money: 999999999 }));
+              }} />
+            </div>
+            <div className="flex items-center justify-between p-2 bg-destructive/10 rounded-lg border border-destructive/30">
+              <div>
+                <h3 className="font-semibold text-xs">🪙 Unendlich Tokens</h3>
+                <p className="text-[10px] text-muted-foreground">Rebirth-Tokens auf ∞</p>
+              </div>
+              <Switch checked={cheatTokens} onCheckedChange={(c) => {
+                setCheatTokens(c);
+                if (c) setGameState(prev => ({ ...prev, rebirthTokens: 999999 }));
               }} />
             </div>
             <div className="flex items-center justify-between p-2 bg-destructive/10 rounded-lg border border-destructive/30">
