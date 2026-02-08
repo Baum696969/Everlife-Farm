@@ -51,6 +51,19 @@ export interface RebirthShopState {
 
 export type AutoSellMode = 'off' | 'normal' | 'all' | 'gold+';
 
+export interface FarmerSlot {
+  plantKey: string;
+  startTime: number;
+  duration: number; // total ms to grow
+  done: boolean;
+}
+
+export interface FarmerState {
+  unlocked: boolean;
+  level: number; // 1-5
+  slots: FarmerSlot[];
+}
+
 export interface GameState {
   money: number;
   fields: Field[];
@@ -71,6 +84,10 @@ export interface GameState {
   rebirthFieldsBought: number; // 0-2
   milestoneTokensClaimed: boolean; // one-time +5 at rebirth 10
   startMoneyUsed: boolean; // track if first-plant discount was used this rebirth
+  // Update 4
+  lastPlanted: Record<number, string>; // fieldIndex -> plantKey (for replant)
+  tutorialCompleted: boolean;
+  farmer: FarmerState;
 }
 
 export interface HarvestResult {
