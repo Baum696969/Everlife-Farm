@@ -1192,6 +1192,15 @@ export default function FarmGame() {
           )}
         </div>
         <div className="flex items-center gap-1.5">
+          <Button variant="secondary" size="icon" className="rounded-full h-8 w-8" onClick={() => setIndexModal(true)}>
+            📖
+          </Button>
+          <Button variant="secondary" size="icon" className="rounded-full h-8 w-8 relative" onClick={() => setRebirthModal(true)}>
+            🔄
+            {gameState.rebirths > 0 && (
+              <span className="absolute -top-1 -right-1 bg-destructive text-destructive-foreground text-[8px] rounded-full w-4 h-4 flex items-center justify-center">{gameState.rebirths}</span>
+            )}
+          </Button>
           <Button variant="secondary" size="icon" className="rounded-full h-8 w-8" onClick={() => setAbilitiesModal(true)}>
             ⭐
           </Button>
@@ -1310,8 +1319,6 @@ export default function FarmGame() {
       {/* Bottom Navigation - 7 tabs */}
       <div className="fixed bottom-0 left-0 right-0 bg-card/95 p-1.5 flex justify-around shadow-lg z-50">
         {[
-          { icon: '📖', label: 'Index', onClick: () => setIndexModal(true) },
-          { icon: '🔄', label: 'Rebirth', onClick: () => setRebirthModal(true), badge: gameState.rebirths > 0 ? gameState.rebirths : undefined },
           { icon: '🛒', label: 'Händler', onClick: () => setShopModal(true) },
           { icon: '💧', label: 'Gießkanne', onClick: () => setWaterUpgradeModal(true) },
           { icon: '🌾', label: 'Ernte', onClick: () => setHarvestedModal(true), badge: totalHarvestedCount > 0 ? totalHarvestedCount : undefined },
