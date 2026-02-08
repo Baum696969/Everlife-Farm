@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef } from 'react';
-import type { SoundSettings } from '@/lib/farm-types';
+import type { SoundSettings, MusicTrack } from '@/lib/farm-types';
 
 export type SoundType = 'click' | 'plant' | 'harvest' | 'autoHarvest' | 'buy' | 'sell' | 'water' | 'rebirth' | 'event' | 'unlock' | 'drop' | 'grow';
 
@@ -45,6 +45,14 @@ const synthConfigs: Partial<Record<SoundType, { freq: number[]; duration: number
   unlock: { freq: [800, 1000, 1200, 1400], duration: 500, waveform: 'triangle' },
 };
 
+// Music tracks
+export const musicTracks: { key: MusicTrack; name: string; path: string }[] = [
+  { key: 'standard', name: 'Standard (empfohlen)', path: '/sounds/music-standard.mp3' },
+  { key: 'lofi', name: 'Lo-Fi Chill', path: '/sounds/music-lofi.mp3' },
+  { key: 'lounge', name: 'Cozy Lounge', path: '/sounds/music-lounge.mp3' },
+  { key: 'gaming', name: 'Gaming Vibes', path: '/sounds/music-gaming.mp3' },
+];
+
 // Preloaded audio cache
 const audioCache: Map<string, HTMLAudioElement> = new Map();
 
@@ -64,7 +72,8 @@ function preloadAudio(path: string): HTMLAudioElement {
 });
 
 export function useFarmSounds(settings: SoundSettings) {
-  const musicRef = useRef<{ ctx: AudioContext; stop: () => void } | null>(null);
+  const musicRef = useRef<HTMLAudioElement | null>(null);
+  const previewRef = useRef<HTMLAudioElement | null>(null);
 
   const playSound = useCallback((type: SoundType, volumeOverride?: number) => {
     const cat = soundCategory[type];
@@ -81,7 +90,6 @@ export function useFarmSounds(settings: SoundSettings) {
         const path = hitPlantPaths[Math.floor(Math.random() * hitPlantPaths.length)];
         const audio = preloadAudio(path).cloneNode() as HTMLAudioElement;
         audio.volume = type === 'autoHarvest' ? vol * 0.7 : vol;
-        // Slight pitch variation ±3%
         if (audio.preservesPitch !== undefined) audio.preservesPitch = false;
         audio.playbackRate = 0.97 + Math.random() * 0.06;
         audio.play().catch(() => {});
@@ -118,51 +126,65 @@ export function useFarmSounds(settings: SoundSettings) {
     }
   }, [settings]);
 
-  // Background music
+  // Background music using real MP3 tracks
   useEffect(() => {
-    if (!settings.music || settings.masterVolume <= 0) {
+    if (!settings.music || settings.masterVolume <= 0 || settings.musicVolume <= 0) {
       if (musicRef.current) {
-        musicRef.current.stop();
+        musicRef.current.pause();
+        musicRef.current.currentTime = 0;
         musicRef.current = null;
       }
       return;
     }
 
-    try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      let running = true;
-      const melody = [262, 294, 330, 349, 392, 349, 330, 294];
-      let noteIdx = 0;
-      const vol = settings.masterVolume;
-
-      const playLoop = () => {
-        if (!running) return;
-        const osc = ctx.createOscillator();
-        const gain = ctx.createGain();
-        osc.connect(gain);
-        gain.connect(ctx.destination);
-        osc.frequency.setValueAtTime(melody[noteIdx], ctx.currentTime);
-        osc.type = 'sine';
-        gain.gain.setValueAtTime(0.04 * vol, ctx.currentTime);
-        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.5);
-        osc.start(ctx.currentTime);
-        osc.stop(ctx.currentTime + 0.5);
-        noteIdx = (noteIdx + 1) % melody.length;
-        setTimeout(playLoop, 600);
-      };
-
-      playLoop();
-      musicRef.current = { ctx, stop: () => { running = false; ctx.close(); } };
-
-      return () => {
-        running = false;
-        ctx.close();
-        musicRef.current = null;
-      };
-    } catch {
-      // Audio not available
+    const track = musicTracks.find(t => t.key === settings.musicTrack) || musicTracks[0];
+    
+    // If track changed, stop old one
+    if (musicRef.current && musicRef.current.src !== new URL(track.path, window.location.origin).href) {
+      musicRef.current.pause();
+      musicRef.current.currentTime = 0;
+      musicRef.current = null;
     }
-  }, [settings.music, settings.masterVolume]);
 
-  return playSound;
+    if (!musicRef.current) {
+      const audio = new Audio(track.path);
+      audio.loop = true;
+      audio.volume = settings.musicVolume * settings.masterVolume;
+      audio.play().catch(() => {});
+      musicRef.current = audio;
+    } else {
+      musicRef.current.volume = settings.musicVolume * settings.masterVolume;
+    }
+
+    return () => {
+      if (musicRef.current) {
+        musicRef.current.pause();
+        musicRef.current.currentTime = 0;
+        musicRef.current = null;
+      }
+    };
+  }, [settings.music, settings.musicTrack, settings.musicVolume, settings.masterVolume]);
+
+  // Preview a music track (short play)
+  const previewTrack = useCallback((trackKey: MusicTrack) => {
+    if (previewRef.current) {
+      previewRef.current.pause();
+      previewRef.current = null;
+    }
+    const track = musicTracks.find(t => t.key === trackKey);
+    if (!track) return;
+    const audio = new Audio(track.path);
+    audio.volume = (settings.musicVolume || 0.5) * settings.masterVolume;
+    audio.play().catch(() => {});
+    previewRef.current = audio;
+    // Stop after 6 seconds
+    setTimeout(() => {
+      if (previewRef.current === audio) {
+        audio.pause();
+        previewRef.current = null;
+      }
+    }, 6000);
+  }, [settings.musicVolume, settings.masterVolume]);
+
+  return { playSound, previewTrack };
 }

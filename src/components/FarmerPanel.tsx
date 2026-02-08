@@ -1,31 +1,27 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { Switch } from '@/components/ui/switch';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
-import type { FarmerState, FarmerSlot, GameState } from '@/lib/farm-types';
+import type { FarmerState, GameState } from '@/lib/farm-types';
 import type { Plant } from '@/lib/farm-types';
 import { MAX_GROW_TIME } from '@/lib/farm-milestones';
-import { variants, variantKeys, rollStackedVariants } from '@/lib/farm-data';
 
 // === Farmer scaling system (up to 9999) ===
 
 export function getFarmerUpgradeCost(level: number): number {
-  // Cost formula: 1 + floor(L^1.15 / 12)
   return 1 + Math.floor(Math.pow(level, 1.15) / 12);
 }
 
 export function getFarmerTimeMult(level: number): number {
-  // Starts at 3.0, -0.2% per level, min 1.5
   return Math.max(1.5, 3.0 - level * 0.002);
 }
 
 export function getFarmerSlots(level: number): number {
-  // 1 slot + 1 per 10 levels, softcap at 100
   return Math.min(100, 1 + Math.floor(level / 10));
 }
 
 export function getFarmerPlantsPerCycle(level: number): number {
-  // 1 + 1 per 20 levels
   return 1 + Math.floor(level / 20);
 }
 
@@ -56,6 +52,7 @@ interface FarmerPanelProps {
   onGiveSeeds: (plantKey: string, amount: number) => void;
   onCollect: (slotIndex: number) => void;
   onCollectAll: () => void;
+  onToggleAutoReplant: () => void;
   formatTime: (ms: number) => string;
   harvestSummary: FarmerHarvestSummary | null;
   onDismissSummary: () => void;
@@ -65,6 +62,7 @@ interface FarmerPanelProps {
 export default function FarmerPanel({
   open, onOpenChange, farmer, gameState, allPlants,
   onBuyFarmer, onUpgradeFarmer, onGiveSeeds, onCollect, onCollectAll,
+  onToggleAutoReplant,
   formatTime,
   harvestSummary, onDismissSummary, onSellSummary,
 }: FarmerPanelProps) {
@@ -108,11 +106,44 @@ export default function FarmerPanel({
                 <p>🌱 Pflanzungen/Zyklus: <strong>{config.plantsPerCycle}</strong></p>
               </div>
 
+              {/* Auto-Replant toggle */}
+              <div className="flex items-center justify-between p-2 bg-muted rounded-lg">
+                <div>
+                  <h3 className="font-semibold text-xs">🔄 Auto-Nachpflanzen</h3>
+                  <p className="text-[10px] text-muted-foreground">Pflanzt automatisch nach wenn Seeds im Farmer-Inventar</p>
+                </div>
+                <Switch checked={farmer.autoReplant} onCheckedChange={() => onToggleAutoReplant()} />
+              </div>
+
+              {/* Farmer Inventory */}
+              <div className="space-y-1.5">
+                <h3 className="text-xs font-bold">📦 Farmer-Inventar ({farmer.inventory.length}/3)</h3>
+                {farmer.inventory.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center py-1">Leer – gib dem Farmer Seeds!</p>
+                ) : (
+                  farmer.inventory.map((slot, idx) => {
+                    const plant = allPlants[slot.plantKey];
+                    if (!plant) return null;
+                    return (
+                      <div key={idx} className="flex items-center justify-between p-1.5 bg-muted rounded-lg text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xl">{plant.icon}</span>
+                          <div>
+                            <p className="font-semibold">{plant.name}</p>
+                            <p className="text-[10px] text-muted-foreground">×{slot.amount} Seeds</p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+
               {/* Active slots */}
               <div className="space-y-1.5">
-                <h3 className="text-xs font-bold">Aktive Aufträge</h3>
+                <h3 className="text-xs font-bold">🌱 Aktive Aufträge ({farmer.slots.length}/{config.slots})</h3>
                 {farmer.slots.length === 0 ? (
-                  <p className="text-xs text-muted-foreground text-center py-2">Keine aktiven Aufträge. Gib dem Farmer Samen!</p>
+                  <p className="text-xs text-muted-foreground text-center py-2">Keine aktiven Aufträge.</p>
                 ) : (
                   farmer.slots.map((slot, idx) => {
                     const plant = allPlants[slot.plantKey];
@@ -154,50 +185,52 @@ export default function FarmerPanel({
               </div>
 
               {/* Give seeds with amount selector */}
-              {farmer.slots.length < config.slots && (
-                <div className="space-y-1.5">
-                  <h3 className="text-xs font-bold">🌱 Seeds geben</h3>
-                  <div className="flex gap-1 mb-1">
-                    {[1, 10, 100].map(n => (
-                      <Button key={n} size="sm" variant={seedAmount === n ? 'default' : 'outline'}
-                        onClick={() => setSeedAmount(n)} className="flex-1 h-6 text-[10px]">
-                        ×{n}
-                      </Button>
-                    ))}
-                    <Button size="sm" variant={seedAmount === -1 ? 'default' : 'outline'}
-                      onClick={() => setSeedAmount(-1)} className="flex-1 h-6 text-[10px]">
-                      Max
+              <div className="space-y-1.5">
+                <h3 className="text-xs font-bold">🌱 Seeds geben</h3>
+                {farmer.inventory.length >= 3 && (
+                  <p className="text-[10px] text-muted-foreground">Farmer-Inventar voll (max 3 Seed-Typen).</p>
+                )}
+                <div className="flex gap-1 mb-1">
+                  {[1, 10, 100].map(n => (
+                    <Button key={n} size="sm" variant={seedAmount === n ? 'default' : 'outline'}
+                      onClick={() => setSeedAmount(n)} className="flex-1 h-6 text-[10px]">
+                      ×{n}
                     </Button>
-                  </div>
-                  {availableSeeds.length === 0 ? (
-                    <p className="text-xs text-muted-foreground text-center">Keine Samen im Inventar.</p>
-                  ) : (
-                    availableSeeds.map(([key, count]) => {
-                      const plant = allPlants[key];
-                      if (!plant) return null;
-                      const growTime = Math.min(plant.growTime, MAX_GROW_TIME) * config.timeMult;
-                      const slotsLeft = config.slots - farmer.slots.length;
-                      const actualAmount = seedAmount === -1 ? Math.min(count, slotsLeft) : Math.min(seedAmount, count, slotsLeft);
-                      return (
-                        <div key={key} className="flex items-center justify-between p-1.5 bg-muted rounded-lg text-xs">
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-xl">{plant.icon}</span>
-                            <div>
-                              <p className="font-semibold">{plant.name} ×{count}</p>
-                              <p className="text-[10px] text-muted-foreground">⏱️ {formatTime(growTime)}</p>
-                            </div>
-                          </div>
-                          <Button size="sm" className="h-7 text-[10px]" 
-                            onClick={() => onGiveSeeds(key, actualAmount)}
-                            disabled={actualAmount <= 0}>
-                            {actualAmount}× geben
-                          </Button>
-                        </div>
-                      );
-                    })
-                  )}
+                  ))}
+                  <Button size="sm" variant={seedAmount === -1 ? 'default' : 'outline'}
+                    onClick={() => setSeedAmount(-1)} className="flex-1 h-6 text-[10px]">
+                    Max
+                  </Button>
                 </div>
-              )}
+                {availableSeeds.length === 0 ? (
+                  <p className="text-xs text-muted-foreground text-center">Keine Samen im Inventar.</p>
+                ) : (
+                  availableSeeds.map(([key, count]) => {
+                    const plant = allPlants[key];
+                    if (!plant) return null;
+                    const growTime = Math.min(plant.growTime, MAX_GROW_TIME) * config.timeMult;
+                    const alreadyInInv = farmer.inventory.find(s => s.plantKey === key);
+                    const canAdd = alreadyInInv || farmer.inventory.length < 3;
+                    const actualAmount = seedAmount === -1 ? count : Math.min(seedAmount, count);
+                    return (
+                      <div key={key} className="flex items-center justify-between p-1.5 bg-muted rounded-lg text-xs">
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xl">{plant.icon}</span>
+                          <div>
+                            <p className="font-semibold">{plant.name} ×{count}</p>
+                            <p className="text-[10px] text-muted-foreground">⏱️ {formatTime(growTime)}</p>
+                          </div>
+                        </div>
+                        <Button size="sm" className="h-7 text-[10px]" 
+                          onClick={() => onGiveSeeds(key, actualAmount)}
+                          disabled={actualAmount <= 0 || !canAdd}>
+                          {actualAmount}× geben
+                        </Button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
 
               {/* Upgrade */}
               {farmer.level < 9999 && (
