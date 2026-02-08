@@ -43,6 +43,7 @@ export interface GameState {
   discoveredVariants: Record<string, string[]>;
   eventStartTime: number | null;
   eventType: string | null;
+  waterLevel: number;
 }
 
 // harvestedInventory: Record<plantKey, Record<variantKey, count>>
@@ -56,4 +57,5 @@ export interface SoundSettings {
   drop: boolean;
   event: boolean;
   rebirth: boolean;
+  notifications: boolean;
 }

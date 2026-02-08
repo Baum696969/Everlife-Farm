@@ -133,7 +133,20 @@ export function calculateValue(baseValue: number, variantKey: string, rebirths: 
 export const EVENT_INTERVAL = 15 * 60 * 1000; // 15 minutes
 export const EVENT_DURATION = 5 * 60 * 1000;  // 5 minutes
 
-// Watering constants
-export const WATER_DURATION = 30000;  // 30 seconds
-export const WATER_COOLDOWN = 15000;  // 15 seconds
-export const WATER_SPEED_MULT = 2;    // ×2 speed
+// Watering constants (defaults for level 0)
+export const WATER_DURATION = 30000;
+export const WATER_COOLDOWN = 15000;
+export const WATER_SPEED_MULT = 2;
+
+// Watering upgrades
+export const waterUpgrades = [
+  { level: 0, duration: 30000, cooldown: 15000, speedMult: 2, cost: 0, label: 'Standard' },
+  { level: 1, duration: 45000, cooldown: 12000, speedMult: 2.5, cost: 500, label: 'Verbessert' },
+  { level: 2, duration: 60000, cooldown: 8000, speedMult: 3, cost: 2000, label: 'Fortgeschritten' },
+  { level: 3, duration: 90000, cooldown: 5000, speedMult: 4, cost: 10000, label: 'Meister' },
+];
+
+export function getWaterStats(level: number) {
+  const upgrade = waterUpgrades[Math.min(level, waterUpgrades.length - 1)];
+  return { duration: upgrade.duration, cooldown: upgrade.cooldown, speedMult: upgrade.speedMult };
+}
