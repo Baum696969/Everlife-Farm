@@ -12,6 +12,7 @@ import { useFarmSounds, musicTracks } from '@/hooks/use-farm-sounds';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { rebirthMilestones } from '@/lib/farm-milestones';
 import TutorialModal from '@/components/TutorialModal';
+import AbilitiesModal from '@/components/AbilitiesModal';
 import FarmerPanel, { getFarmerConfig, getFarmerUpgradeCost, type FarmerHarvestSummary } from '@/components/FarmerPanel';
 import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState, AutoSellMode, FarmerState, MusicTrack } from '@/lib/farm-types';
 import {
@@ -119,6 +120,7 @@ export default function FarmGame() {
   const [rebirthModal, setRebirthModal] = useState(false);
   const [waterUpgradeModal, setWaterUpgradeModal] = useState(false);
   const [rebirthShopModal, setRebirthShopModal] = useState(false);
+  const [abilitiesModal, setAbilitiesModal] = useState(false);
   const [farmerModal, setFarmerModal] = useState(false);
   const [adminModal, setAdminModal] = useState(false);
   const [cheatMode, setCheatMode] = useState(false);
@@ -726,20 +728,29 @@ export default function FarmGame() {
   const giveSeedsToFarmer = (plantKey: string, amount: number) => {
     const plant = allPlants[plantKey];
     if (!plant) return;
-    if ((gameState.inventory[plantKey] || 0) < amount) return;
+    
+    // Check if farmer inventory is full (max 3 seed types)
+    const existingIdx = gameState.farmer.inventory.findIndex(s => s.plantKey === plantKey);
+    if (existingIdx < 0 && gameState.farmer.inventory.length >= 3) {
+      playSound('wrong');
+      notify({ title: '❌ Farmer-Inventar voll (max 3 Seed-Typen)' });
+      return;
+    }
+    
+    if ((gameState.inventory[plantKey] || 0) < amount || amount <= 0) {
+      playSound('wrong');
+      notify({ title: '❌ Nicht genug Seeds' });
+      return;
+    }
 
     playSound('plant');
 
     setGameState(prev => {
       const newInv = [...prev.farmer.inventory];
-      const existingIdx = newInv.findIndex(s => s.plantKey === plantKey);
-      if (existingIdx >= 0) {
-        newInv[existingIdx] = { ...newInv[existingIdx], amount: newInv[existingIdx].amount + amount };
+      const eIdx = newInv.findIndex(s => s.plantKey === plantKey);
+      if (eIdx >= 0) {
+        newInv[eIdx] = { ...newInv[eIdx], amount: newInv[eIdx].amount + amount };
       } else {
-        if (newInv.length >= 3) {
-          // Max 3 seed types in farmer inventory
-          return prev;
-        }
         newInv.push({ plantKey, amount });
       }
       return {
@@ -1181,6 +1192,9 @@ export default function FarmGame() {
           )}
         </div>
         <div className="flex items-center gap-1.5">
+          <Button variant="secondary" size="icon" className="rounded-full h-8 w-8" onClick={() => setAbilitiesModal(true)}>
+            ⭐
+          </Button>
           <Button variant="secondary" size="icon" className="rounded-full h-8 w-8" onClick={() => setSettingsModal(true)}>
             ⚙️
           </Button>
@@ -1204,7 +1218,11 @@ export default function FarmGame() {
         setTutorialModal(false);
         setGameState(prev => ({ ...prev, tutorialCompleted: true }));
         saveGame();
-      }} />
+      }}
+        soundSettings={soundSettings}
+        onSoundSettingsChange={setSoundSettings}
+        previewTrack={previewTrack}
+      />
 
       {/* Game Area - Fields */}
       <div className="p-3 pb-24 grid grid-cols-2 gap-2">
@@ -1336,7 +1354,7 @@ export default function FarmGame() {
                 ))}
                 <Button size="sm" variant={buyAmount === -1 ? 'default' : 'outline'}
                   onClick={() => setBuyAmount(-1)} className="flex-1 h-7 text-xs">
-                  Max
+                  Max{buyAmount === -1 ? '' : ''}
                 </Button>
               </div>
 
@@ -1355,7 +1373,7 @@ export default function FarmGame() {
                       </div>
                     </div>
                     <Button onClick={() => buySeed(key, amt || 1)} disabled={gameState.money < cost || amt === 0} size="sm" className="h-7 text-[10px]">
-                      {amt > 0 ? `${amt}× $${cost}` : 'Kaufen'}
+                      {buyAmount === -1 ? `Max (${amt}) $${cost}` : (amt > 0 ? `${amt}× $${cost}` : 'Kaufen')}
                     </Button>
                   </div>
                 );
@@ -1435,7 +1453,7 @@ export default function FarmGame() {
                     <Button onClick={() => buySeed(key, amt || 1)}
                       disabled={!unlocked || gameState.money < cost || amt === 0}
                       size="sm" className="h-7 text-[10px]">
-                      {unlocked ? (amt > 0 ? `${amt}× $${cost}` : 'Kaufen') : '🔒'}
+                      {unlocked ? (buyAmount === -1 ? `Max (${amt}) $${cost}` : (amt > 0 ? `${amt}× $${cost}` : 'Kaufen')) : '🔒'}
                     </Button>
                   </div>
                 );
@@ -1628,47 +1646,6 @@ export default function FarmGame() {
         <DialogContent className="max-w-[95vw] max-h-[80vh] overflow-y-auto">
           <DialogHeader><DialogTitle>⚙️ Einstellungen</DialogTitle></DialogHeader>
           <div className="space-y-2">
-            {/* Auto-systems */}
-            {hasMilestone(gameState.rebirths, 'autoHarvest') && (
-              <div className="flex items-center justify-between p-2 bg-green-50 rounded-lg border border-green-200">
-                <div>
-                  <h3 className="font-semibold text-xs">🤖 Auto-Ernte</h3>
-                  <p className="text-[10px] text-muted-foreground">1 Pflanze/Sek automatisch ernten</p>
-                </div>
-                <Switch checked={gameState.autoHarvest}
-                  onCheckedChange={(c) => setGameState(prev => ({ ...prev, autoHarvest: c }))} />
-              </div>
-            )}
-
-            {hasMilestone(gameState.rebirths, 'autoSell') && (
-              <div className="p-2 bg-green-50 rounded-lg border border-green-200">
-                <h3 className="font-semibold text-xs mb-1">💸 Auto-Sell</h3>
-                <div className="flex gap-1">
-                  {([['off', 'Aus'], ['normal', 'Normal'], ['all', 'Alles'], ['gold+', 'Gold+']] as const).map(([mode, label]) => (
-                    <Button key={mode} size="sm" variant={gameState.autoSell === mode ? 'default' : 'outline'}
-                      onClick={() => setGameState(prev => ({ ...prev, autoSell: mode as AutoSellMode }))}
-                      className="flex-1 text-[9px] h-6">
-                      {label}
-                    </Button>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {hasMilestone(gameState.rebirths, 'autoWater') && (
-              <div className="flex items-center justify-between p-2 bg-blue-50 rounded-lg border border-blue-200">
-                <div>
-                  <h3 className="font-semibold text-xs">💧 Auto-Gießkanne</h3>
-                  <p className="text-[10px] text-muted-foreground">Smart-Gießen (alle 3s, &gt;10s Rest)</p>
-                </div>
-                <Switch checked={gameState.autoWater}
-                  onCheckedChange={(c) => setGameState(prev => ({ ...prev, autoWater: c }))} />
-              </div>
-            )}
-
-            {(hasMilestone(gameState.rebirths, 'autoHarvest') || hasMilestone(gameState.rebirths, 'autoSell') || hasMilestone(gameState.rebirths, 'autoWater')) && (
-              <div className="border-t pt-1" />
-            )}
 
             <div className="flex items-center justify-between p-2 bg-muted rounded-lg">
               <div>
@@ -1959,6 +1936,17 @@ export default function FarmGame() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Abilities Modal */}
+      <AbilitiesModal
+        open={abilitiesModal}
+        onOpenChange={setAbilitiesModal}
+        gameState={gameState}
+        onToggleAutoHarvest={(v) => setGameState(prev => ({ ...prev, autoHarvest: v }))}
+        onSetAutoSell={(mode) => setGameState(prev => ({ ...prev, autoSell: mode }))}
+        onToggleAutoWater={(v) => setGameState(prev => ({ ...prev, autoWater: v }))}
+        onToggleFarmerAutoReplant={() => setGameState(prev => ({ ...prev, farmer: { ...prev.farmer, autoReplant: !prev.farmer.autoReplant } }))}
+      />
 
       {/* Farmer Panel */}
       <FarmerPanel

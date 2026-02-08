@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { SoundSettings, MusicTrack } from '@/lib/farm-types';
 
-export type SoundType = 'click' | 'plant' | 'harvest' | 'autoHarvest' | 'buy' | 'sell' | 'water' | 'rebirth' | 'event' | 'unlock' | 'drop' | 'grow';
+export type SoundType = 'click' | 'plant' | 'harvest' | 'autoHarvest' | 'buy' | 'sell' | 'water' | 'rebirth' | 'event' | 'unlock' | 'drop' | 'grow' | 'wrong';
 
 // Sound category mapping
 type SoundCategory = 'plant' | 'ui' | 'eventRebirth' | 'always';
@@ -9,6 +9,7 @@ type SoundCategory = 'plant' | 'ui' | 'eventRebirth' | 'always';
 const soundCategory: Record<SoundType, SoundCategory> = {
   click: 'always',
   grow: 'always',
+  wrong: 'always',
   plant: 'plant',
   harvest: 'plant',
   autoHarvest: 'plant',
@@ -33,6 +34,7 @@ const mp3Sounds: Partial<Record<SoundType, string>> = {
   buy: '/sounds/buy.mp3',
   sell: '/sounds/buy.mp3',
   rebirth: '/sounds/rebirth.mp3',
+  wrong: '/sounds/wrong.mp3',
 };
 
 // Synth fallbacks for sounds without MP3

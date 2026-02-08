@@ -224,7 +224,7 @@ export default function FarmerPanel({
                         <Button size="sm" className="h-7 text-[10px]" 
                           onClick={() => onGiveSeeds(key, actualAmount)}
                           disabled={actualAmount <= 0 || !canAdd}>
-                          {actualAmount}× geben
+                          {seedAmount === -1 ? `Max (${actualAmount})` : `${actualAmount}×`} geben
                         </Button>
                       </div>
                     );
