@@ -1617,48 +1617,34 @@ export default function FarmGame() {
           {/* Inline Rebirth Path */}
           <div className="border-t pt-3 mt-3">
             <h3 className="text-xs font-bold mb-2">🛤️ Rebirth-Pfad</h3>
-            <div className="overflow-x-auto pb-2">
-              <div className="flex items-center gap-0 min-w-max">
-                {rebirthMilestones.map((milestone, idx) => {
-                  const unlocked = gameState.rebirths >= milestone.rebirth;
-                  return (
-                    <div key={idx} className="flex items-center">
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <div className={`w-9 h-9 rounded-full flex items-center justify-center text-sm shrink-0 border-2 cursor-help transition-all ${
-                              unlocked
-                                ? 'bg-primary text-primary-foreground border-primary animate-pulse'
-                                : 'bg-muted border-border text-muted-foreground'
-                            }`}>
-                              {unlocked ? milestone.icon : '?'}
-                            </div>
-                          </TooltipTrigger>
-                          <TooltipContent side="bottom" className="max-w-[180px]">
-                            {unlocked ? (
-                              <>
-                                <p className="font-bold text-xs">{milestone.icon} {milestone.name}</p>
-                                <p className="text-[10px] text-muted-foreground">{milestone.description}</p>
-                                <p className="text-[9px] text-primary font-bold mt-0.5">✅ Aktiv (Rebirth {milestone.rebirth})</p>
-                              </>
-                            ) : (
-                              <>
-                                <p className="font-bold text-xs">???</p>
-                                <p className="text-[10px] text-muted-foreground">Freischaltung bei Rebirth {milestone.rebirth}</p>
-                              </>
-                            )}
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                      {idx < rebirthMilestones.length - 1 && (
-                        <div className={`w-4 h-0.5 ${
-                          gameState.rebirths >= rebirthMilestones[idx + 1].rebirth ? 'bg-primary' : 'bg-border'
-                        }`} />
+            <div className="space-y-1.5 max-h-[200px] overflow-y-auto pr-1">
+              {rebirthMilestones.map((milestone, idx) => {
+                const unlocked = gameState.rebirths >= milestone.rebirth;
+                return (
+                  <div key={idx} className="flex items-center gap-2">
+                    <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs shrink-0 border-2 ${
+                      unlocked
+                        ? 'bg-primary text-primary-foreground border-primary'
+                        : 'bg-muted border-border text-muted-foreground'
+                    }`}>
+                      {unlocked ? milestone.icon : '?'}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-1">
+                        <span className={`text-[11px] font-bold truncate ${unlocked ? 'text-foreground' : 'text-muted-foreground'}`}>
+                          {unlocked ? milestone.name : '???'}
+                        </span>
+                        <span className={`text-[9px] px-1 py-0.5 rounded-full shrink-0 ${
+                          unlocked ? 'bg-primary text-primary-foreground' : 'bg-muted-foreground/20 text-muted-foreground'
+                        }`}>R{milestone.rebirth}</span>
+                      </div>
+                      {unlocked && (
+                        <p className="text-[9px] text-muted-foreground truncate">{milestone.description}</p>
                       )}
                     </div>
-                  );
-                })}
-              </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
 
