@@ -345,6 +345,9 @@ export default function FarmGame() {
     } catch { /* Fresh start */ setTutorialModal(true); }
   }, []);
 
+  // Load game on mount
+  useEffect(() => { loadGame(); }, [loadGame]);
+
   // === HARVEST LOGIC (shared by manual + auto) ===
   const doHarvest = useCallback((fieldIndex: number, isAuto: boolean = false) => {
     // Read current state directly to avoid closure issues
