@@ -154,6 +154,14 @@ export default function FarmGame() {
 
   const [tick, setTick] = useState(0);
 
+  // Refs for reliable saving (avoid stale closures)
+  const gameStateRef = useRef(gameState);
+  const harvestedInventoryRef = useRef(harvestedInventory);
+  const soundSettingsRef = useRef(soundSettings);
+  useEffect(() => { gameStateRef.current = gameState; }, [gameState]);
+  useEffect(() => { harvestedInventoryRef.current = harvestedInventory; }, [harvestedInventory]);
+  useEffect(() => { soundSettingsRef.current = soundSettings; }, [soundSettings]);
+
   // Cheat: keep money/tokens at max
   useEffect(() => {
     if (cheatMode && gameState.money < 999999999) {
@@ -234,11 +242,11 @@ export default function FarmGame() {
 
   // === SAVE / LOAD ===
   const saveGame = useCallback(() => {
-    const toSave = { ...gameState, lastUpdate: Date.now() };
+    const toSave = { ...gameStateRef.current, lastUpdate: Date.now() };
     localStorage.setItem(SAVE_KEY, JSON.stringify(toSave));
-    localStorage.setItem(HARVEST_KEY, JSON.stringify(harvestedInventory));
-    localStorage.setItem('farmSounds', JSON.stringify(soundSettings));
-  }, [gameState, harvestedInventory, soundSettings]);
+    localStorage.setItem(HARVEST_KEY, JSON.stringify(harvestedInventoryRef.current));
+    localStorage.setItem('farmSounds', JSON.stringify(soundSettingsRef.current));
+  }, []);
 
   const loadGame = useCallback(() => {
     try {
