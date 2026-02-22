@@ -14,8 +14,8 @@ import { rebirthMilestones } from '@/lib/farm-milestones';
 import TutorialModal from '@/components/TutorialModal';
 import AbilitiesModal from '@/components/AbilitiesModal';
 import FarmerPanel, { type FarmerHarvestSummary } from '@/components/FarmerPanel';
-import { farmerDefs, getFarmerEffectiveStats, getMainLevelCost, endlessStatDefs, getEndlessStatCost, FARMER_MAIN_LEVELS } from '@/lib/farm-farmer';
-import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState, AutoSellMode, FarmerState, SingleFarmerState, MultiFarmerState, MusicTrack } from '@/lib/farm-types';
+import { farmerDefs, getFarmerEffectiveStats, getMainLevelCost, endlessStatDefs, getEndlessStatCost, isEndlessStatMaxed, FARMER_MAIN_LEVELS, getMaxSeeds, getMaxSeedsCost } from '@/lib/farm-farmer';
+import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState, AutoSellMode, FarmerState, SingleFarmerState, MultiFarmerState, MusicTrack, DiscountState } from '@/lib/farm-types';
 import {
   plants, rebirthPlants, getAllPlants, variants, variantKeys,
   eventTypes, pickRandomEvent, fieldPrices, getRebirthCost, getRebirthTokens,
@@ -26,13 +26,14 @@ import {
   BASE_OFFLINE_EFFICIENCY, MAX_OFFLINE_HOURS,
   CHAIN_COOLDOWN_INCREMENT, CHAIN_COOLDOWN_RESET,
   rollVariant,
+  generateDiscounts, DISCOUNT_DURATION, DOUBLE_SELL_DURATION,
 } from '@/lib/farm-data';
 import {
   hasMilestone, getMilestoneGrowthMult, getMilestoneGoldMult,
   getStartMoney, MAX_GROW_TIME, multiRebirthOptions, rebirthFieldCosts,
 } from '@/lib/farm-milestones';
 
-const GAME_VERSION = '0.4.1';
+const GAME_VERSION = '1.4.0';
 
 const SAVE_KEY = 'farmGame4';
 const HARVEST_KEY = 'farmHarvested4';
@@ -42,9 +43,9 @@ const defaultSoundSettings: SoundSettings = {
 };
 
 const defaultWaterUpgrades: WaterUpgradeState = { duration: 0, strength: 0, range: 0, cooldownReduction: 0 };
-const defaultRebirthShop: RebirthShopState = { offlineEfficiency: 0, variantChance: 0, eventBonus: 0, waterStrength: 0, fieldStart: 0, indexBonus: 0 };
+const defaultRebirthShop: RebirthShopState = { offlineEfficiency: 0, variantChance: 0, eventBonus: 0, waterStrength: 0, fieldStart: 0, indexBonus: 0, discountUpgrade: 0 };
 const defaultFarmer: FarmerState = { unlocked: false, level: 1, slots: [], inventory: [], autoReplant: true };
-const defaultSingleFarmer: SingleFarmerState = { unlocked: false, level: 1, endlessStats: {}, slots: [], inventory: [], autoReplant: true };
+const defaultSingleFarmer: SingleFarmerState = { unlocked: false, level: 1, endlessStats: {}, slots: [], inventory: [], autoReplant: true, maxSeedsLevel: 0 };
 const defaultFarmers: MultiFarmerState = [
   { ...defaultSingleFarmer },
   { ...defaultSingleFarmer },
@@ -87,6 +88,8 @@ function createDefaultState(rebirthShop?: RebirthShopState, rebirths?: number, r
     farmers: defaultFarmers.map(f => ({ ...f })),
     seenMilestones: [],
     disableMilestonePopups: false,
+    doubleSellEventStart: null,
+    activeDiscounts: null,
   };
 }
 
@@ -200,6 +203,16 @@ export default function FarmGame() {
   const eventTimeLeft = gameState.eventStartTime ? Math.max(0, EVENT_DURATION - (Date.now() - gameState.eventStartTime)) : 0;
   const allPlants = getAllPlants(gameState.rebirths);
 
+  // 2x Sell Event
+  const doubleSellActive = gameState.doubleSellEventStart ? (Date.now() - gameState.doubleSellEventStart < DOUBLE_SELL_DURATION) : false;
+  const doubleSellTimeLeft = gameState.doubleSellEventStart ? Math.max(0, DOUBLE_SELL_DURATION - (Date.now() - gameState.doubleSellEventStart)) : 0;
+  const sellMultiplier = doubleSellActive ? 2 : 1;
+
+  // Active discounts
+  const activeDiscounts = gameState.activeDiscounts && Date.now() < gameState.activeDiscounts.expiresAt
+    ? gameState.activeDiscounts : null;
+  const discountTimeLeft = activeDiscounts ? Math.max(0, activeDiscounts.expiresAt - Date.now()) : 0;
+
   const totalVariantsCount = Object.keys({ ...plants, ...rebirthPlants }).length * variantKeys.length;
   const discoveredCount = Object.values(gameState.discoveredVariants).reduce((a, b) => a + b.length, 0);
   const indexCompletion = totalVariantsCount > 0 ? discoveredCount / totalVariantsCount : 0;
@@ -303,6 +316,10 @@ export default function FarmGame() {
         // Update 5 migration
         if (!loaded.seenMilestones) loaded.seenMilestones = [];
         if (loaded.disableMilestonePopups === undefined) loaded.disableMilestonePopups = false;
+        // Update 6 (v1.4) migration
+        if (loaded.doubleSellEventStart === undefined) loaded.doubleSellEventStart = null;
+        if (loaded.activeDiscounts === undefined) loaded.activeDiscounts = null;
+        if (!loaded.rebirthShop.discountUpgrade) loaded.rebirthShop.discountUpgrade = 0;
         // Multi-farmer migration
         if (!loaded.farmers || loaded.farmers.length < 3) {
           loaded.farmers = defaultFarmers.map(f => ({ ...f }));
@@ -315,6 +332,7 @@ export default function FarmGame() {
               slots: loaded.farmer.slots || [],
               inventory: loaded.farmer.inventory || [],
               autoReplant: loaded.farmer.autoReplant ?? true,
+              maxSeedsLevel: 0,
             };
           }
         }
@@ -322,6 +340,7 @@ export default function FarmGame() {
         loaded.farmers = loaded.farmers.map(f => ({
           ...f,
           endlessStats: f.endlessStats || {},
+          maxSeedsLevel: f.maxSeedsLevel || 0,
         }));
         // Farmer offline progress (all farmers)
         loaded.farmers = loaded.farmers.map(farmer => {
@@ -535,8 +554,39 @@ export default function FarmGame() {
           changed = true;
         }
 
+        // 2x Sell Event expiry
+        let doubleSellStart = prev.doubleSellEventStart;
+        if (doubleSellStart && now - doubleSellStart >= DOUBLE_SELL_DURATION) {
+          doubleSellStart = null;
+          changed = true;
+        }
+
+        // Random 2x Sell Event (similar to variant events, ~1/1800 chance per tick)
+        if (!doubleSellStart && !eventStartTime) {
+          if (Math.random() < 1 / 1800) {
+            doubleSellStart = now;
+            changed = true;
+            playSound('event');
+          }
+        }
+
+        // Discount generation (every 10 min, random)
+        let discounts = prev.activeDiscounts;
+        if (discounts && now >= discounts.expiresAt) {
+          discounts = null;
+          changed = true;
+        }
+        if (!discounts && Math.random() < 1 / 600) {
+          const ap = getAllPlants(prev.rebirths);
+          discounts = {
+            plants: generateDiscounts(Object.keys(ap), prev.rebirthShop.discountUpgrade),
+            expiresAt: now + DISCOUNT_DURATION,
+          };
+          changed = true;
+        }
+
         if (!changed) return prev;
-        return { ...prev, fields: newFields, eventStartTime, eventType, rebirthTokens: tokens, milestoneTokensClaimed: claimed };
+        return { ...prev, fields: newFields, eventStartTime, eventType, rebirthTokens: tokens, milestoneTokensClaimed: claimed, doubleSellEventStart: doubleSellStart, activeDiscounts: discounts };
       });
 
       setWateredFields(prev => {
@@ -689,8 +739,12 @@ export default function FarmGame() {
     const plant = { ...plants, ...rebirthPlants }[plantKey];
     if (!plant) return;
 
+    // Active discount
+    const discount = activeDiscounts?.plants.find(d => d.plantKey === plantKey);
+    const discountMult = discount ? (1 - discount.discountPercent / 100) : 1;
+
     // First-plant discount
-    let price = plant.price;
+    let price = Math.floor(plant.price * discountMult);
     if (hasMilestone(gameState.rebirths, 'firstPlantDisc') && !gameState.startMoneyUsed && (gameState.inventory[plantKey] || 0) === 0) {
       price = Math.floor(price * 0.5);
     }
@@ -711,7 +765,11 @@ export default function FarmGame() {
   const getMaxBuyable = (plantKey: string): number => {
     const plant = { ...plants, ...rebirthPlants }[plantKey];
     if (!plant || plant.price <= 0) return 0;
-    return Math.floor(gameState.money / plant.price);
+    const discount = activeDiscounts?.plants.find(d => d.plantKey === plantKey);
+    const discountMult = discount ? (1 - discount.discountPercent / 100) : 1;
+    const effectivePrice = Math.floor(plant.price * discountMult);
+    if (effectivePrice <= 0) return 999;
+    return Math.floor(gameState.money / effectivePrice);
   };
 
   const plantSeed = (plantKey: string, fieldIndex: number) => {
@@ -788,6 +846,7 @@ export default function FarmGame() {
     const def = endlessStatDefs.find(d => d.key === statKey);
     if (!def) return;
     const currentLevel = farmer.endlessStats[statKey] || 0;
+    if (isEndlessStatMaxed(def, currentLevel)) return;
     const cost = getEndlessStatCost(def, currentLevel);
     if (gameState.rebirthTokens < cost) return;
     playSound('buy');
@@ -799,6 +858,21 @@ export default function FarmGame() {
       return { ...prev, rebirthTokens: prev.rebirthTokens - cost, farmers: newFarmers };
     });
     notify({ title: `${def.emoji} ${def.name} +1!` });
+    saveGame();
+  };
+
+  const upgradeMaxSeeds = (farmerId: number) => {
+    const farmer = gameState.farmers[farmerId];
+    if (!farmer?.unlocked) return;
+    const cost = getMaxSeedsCost(farmer.maxSeedsLevel);
+    if (gameState.rebirthTokens < cost) return;
+    playSound('buy');
+    setGameState(prev => {
+      const newFarmers = [...prev.farmers];
+      newFarmers[farmerId] = { ...newFarmers[farmerId], maxSeedsLevel: newFarmers[farmerId].maxSeedsLevel + 1 };
+      return { ...prev, rebirthTokens: prev.rebirthTokens - cost, farmers: newFarmers };
+    });
+    notify({ title: `📦 Max Seeds → ${getMaxSeeds(farmer.maxSeedsLevel + 1)}!` });
     saveGame();
   };
 
@@ -814,8 +888,19 @@ export default function FarmGame() {
       notify({ title: '❌ Farmer-Inventar voll (max 3 Seed-Typen)' });
       return;
     }
+
+    // Max seeds check
+    const maxSeeds = getMaxSeeds(farmer.maxSeedsLevel);
+    const currentTotal = farmer.inventory.reduce((s, i) => s + i.amount, 0);
+    const remaining = maxSeeds - currentTotal;
+    if (remaining <= 0) {
+      playSound('wrong');
+      notify({ title: `❌ Farmer-Inventar voll (${currentTotal}/${maxSeeds} Seeds)` });
+      return;
+    }
+    const actualAmount = Math.min(amount, remaining);
     
-    if ((gameState.inventory[plantKey] || 0) < amount || amount <= 0) {
+    if ((gameState.inventory[plantKey] || 0) < actualAmount || actualAmount <= 0) {
       playSound('wrong');
       notify({ title: '❌ Nicht genug Seeds' });
       return;
@@ -829,19 +914,19 @@ export default function FarmGame() {
       const newInv = [...f.inventory];
       const eIdx = newInv.findIndex(s => s.plantKey === plantKey);
       if (eIdx >= 0) {
-        newInv[eIdx] = { ...newInv[eIdx], amount: newInv[eIdx].amount + amount };
+        newInv[eIdx] = { ...newInv[eIdx], amount: newInv[eIdx].amount + actualAmount };
       } else {
-        newInv.push({ plantKey, amount });
+        newInv.push({ plantKey, amount: actualAmount });
       }
       f.inventory = newInv;
       newFarmers[farmerId] = f;
       return {
         ...prev,
-        inventory: { ...prev.inventory, [plantKey]: prev.inventory[plantKey] - amount },
+        inventory: { ...prev.inventory, [plantKey]: prev.inventory[plantKey] - actualAmount },
         farmers: newFarmers,
       };
     });
-    notify({ title: `${farmerDefs[farmerId].emoji} ${amount}× ${plant.name} übergeben!` });
+    notify({ title: `${farmerDefs[farmerId].emoji} ${actualAmount}× ${plant.name} übergeben!` });
     saveGame();
   };
 
@@ -972,7 +1057,7 @@ export default function FarmGame() {
     const plant = allPlants[plantKey];
     if (!plant) return 0;
     const vKeys = variantKeyStr.split('+');
-    return Math.floor(calculateStackedValue(plant.value, vKeys, gameState.rebirths) * indexMoneyBonus);
+    return Math.floor(calculateStackedValue(plant.value, vKeys, gameState.rebirths) * indexMoneyBonus * sellMultiplier);
   };
 
   const sellHarvested = (plantKey: string, variantKeyStr: string, amount: number) => {
@@ -1278,6 +1363,23 @@ export default function FarmGame() {
         </div>
       )}
 
+      {/* 2x Sell Event Banner */}
+      {doubleSellActive && (
+        <div className="bg-amber-500 text-white text-center py-2 px-4 text-sm font-bold animate-pulse">
+          💰 Double Sell Event! Alle Verkäufe ×2 | {formatTime(doubleSellTimeLeft)}
+        </div>
+      )}
+
+      {/* Discount Banner */}
+      {activeDiscounts && (
+        <div className="bg-emerald-600 text-white text-center py-1.5 px-4 text-xs font-bold">
+          🏷️ Händler-Rabatt! {activeDiscounts.plants.map(d => {
+            const p = allPlants[d.plantKey];
+            return p ? `${p.icon}-${d.discountPercent}%` : '';
+          }).join(' | ')} | {formatTime(discountTimeLeft)}
+        </div>
+      )}
+
       {/* Header */}
       <div className="bg-card/90 p-3 flex justify-between items-center shadow-lg">
         <div className="flex items-center gap-2 flex-wrap">
@@ -1480,15 +1582,22 @@ export default function FarmGame() {
 
               {Object.entries(plants).map(([key, plant]) => {
                 const amt = buyAmount === -1 ? getMaxBuyable(key) : buyAmount;
-                const cost = plant.price * (amt || 1);
+                const discount = activeDiscounts?.plants.find(d => d.plantKey === key);
+                const discountMult = discount ? (1 - discount.discountPercent / 100) : 1;
+                const effectivePrice = Math.floor(plant.price * discountMult);
+                const cost = effectivePrice * (amt || 1);
                 return (
-                  <div key={key} className="flex items-center justify-between p-1.5 bg-muted rounded-lg text-xs">
+                  <div key={key} className={`flex items-center justify-between p-1.5 rounded-lg text-xs ${discount ? 'bg-emerald-50 border border-emerald-200' : 'bg-muted'}`}>
                     <div className="flex items-center gap-1.5">
                       <span className="text-2xl">{plant.icon}</span>
                       <div>
                         <h3 className="font-semibold text-xs">{plant.name}</h3>
                         <p className="text-[10px] text-muted-foreground">
-                          ${plant.price} | Wert: ${plant.value} | {formatTime(Math.min(plant.growTime, MAX_GROW_TIME))}
+                          {discount ? (
+                            <><span className="line-through">${plant.price}</span> <span className="text-emerald-600 font-bold">${effectivePrice} (-{discount.discountPercent}%)</span></>
+                          ) : (
+                            <>${plant.price}</>
+                          )} | Wert: ${plant.value} | {formatTime(Math.min(plant.growTime, MAX_GROW_TIME))}
                         </p>
                       </div>
                     </div>
@@ -2086,6 +2195,7 @@ export default function FarmGame() {
         onBuyFarmer={buyFarmerById}
         onUpgradeFarmer={upgradeFarmerById}
         onUpgradeEndlessStat={upgradeEndlessStat}
+        onUpgradeMaxSeeds={upgradeMaxSeeds}
         onGiveSeeds={giveSeedsToFarmer}
         onCollect={collectFarmerSlot}
         onCollectAllFromFarmer={collectAllFromFarmer}
