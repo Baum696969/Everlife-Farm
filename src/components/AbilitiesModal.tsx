@@ -47,7 +47,7 @@ export default function AbilitiesModal({
           {abilities.map(ability => {
             const unlocked = ability.milestoneKey
               ? hasMilestone(gameState.rebirths, ability.milestoneKey)
-              : ability.type === 'farmer' ? gameState.farmer.unlocked : true;
+              : ability.type === 'farmer' ? gameState.farmers.some(f => f.unlocked) : true;
 
             if (!unlocked) {
               return (
@@ -99,7 +99,7 @@ export default function AbilitiesModal({
 
             const isActive = ability.type === 'toggle'
               ? ability.key === 'autoHarvest' ? gameState.autoHarvest : gameState.autoWater
-              : gameState.farmer.autoReplant;
+              : gameState.farmers.some(f => f.unlocked && f.autoReplant);
 
             const onToggle = ability.type === 'toggle'
               ? ability.key === 'autoHarvest' ? onToggleAutoHarvest : onToggleAutoWater
