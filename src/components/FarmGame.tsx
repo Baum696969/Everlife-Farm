@@ -570,22 +570,29 @@ export default function FarmGame() {
   }, [gameState.autoWater, gameState.rebirths, gameState.fields, wateredFields, waterCooldowns]);
 
   // === FARMER AUTO-REPLANT ===
+  const farmerRef = useRef(gameState.farmer);
+  useEffect(() => { farmerRef.current = gameState.farmer; }, [gameState.farmer]);
+  const allPlantsRef = useRef(allPlants);
+  useEffect(() => { allPlantsRef.current = allPlants; }, [allPlants]);
+
   useEffect(() => {
     if (!gameState.farmer.unlocked || !gameState.farmer.autoReplant) return;
-    if (gameState.farmer.inventory.length === 0) return;
 
     const interval = setInterval(() => {
+      const farmer = farmerRef.current;
+      if (!farmer.unlocked || !farmer.autoReplant) return;
+      if (farmer.inventory.length === 0) return;
+
       const now = Date.now();
-      const config = getFarmerConfig(gameState.farmer.level);
-      const slotsUsed = gameState.farmer.slots.length;
-      const slotsLeft = config.slots - slotsUsed;
+      const config = getFarmerConfig(farmer.level);
+      const slotsLeft = config.slots - farmer.slots.length;
       if (slotsLeft <= 0) return;
 
-      // Check if any inventory has seeds
-      const seedSlot = gameState.farmer.inventory.find(s => s.amount > 0);
+      const seedSlot = farmer.inventory.find(s => s.amount > 0);
       if (!seedSlot) return;
 
-      const plant = allPlants[seedSlot.plantKey];
+      const ap = allPlantsRef.current;
+      const plant = ap[seedSlot.plantKey];
       if (!plant) return;
 
       const cappedGrowTime = Math.min(plant.growTime, MAX_GROW_TIME);
@@ -600,7 +607,6 @@ export default function FarmGame() {
 
         const newInv = [...prev.farmer.inventory];
         newInv[invIdx] = { ...newInv[invIdx], amount: newInv[invIdx].amount - 1 };
-        // Remove empty slots
         const filteredInv = newInv.filter(s => s.amount > 0);
 
         return {
@@ -615,7 +621,7 @@ export default function FarmGame() {
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [gameState.farmer.unlocked, gameState.farmer.autoReplant, gameState.farmer.inventory, gameState.farmer.level, gameState.farmer.slots.length, allPlants]);
+  }, [gameState.farmer.unlocked, gameState.farmer.autoReplant]);
 
 
   // Autosave every 10s
@@ -1077,14 +1083,19 @@ export default function FarmGame() {
 
     playSound('buy');
     setGameState(prev => {
+      const newMaxFields = prev.maxFields + 1;
       const newFields = [...prev.fields];
-      const newFieldId = newFields.length + 1;
-      newFields.push({ id: newFieldId, unlocked: true, planted: null, plantTime: 0, stage: 0, growStartTime: 0 });
+      // Pad array with locked fields up to the new max
+      while (newFields.length < newMaxFields) {
+        newFields.push({ id: newFields.length + 1, unlocked: false, planted: null, plantTime: 0, stage: 0, growStartTime: 0 });
+      }
+      // The last field (rebirth field) is unlocked
+      newFields[newMaxFields - 1] = { id: newMaxFields, unlocked: true, planted: null, plantTime: 0, stage: 0, growStartTime: 0 };
       return {
         ...prev,
         rebirthTokens: prev.rebirthTokens - cost,
         rebirthFieldsBought: prev.rebirthFieldsBought + 1,
-        maxFields: prev.maxFields + 1,
+        maxFields: newMaxFields,
         fields: newFields,
       };
     });
