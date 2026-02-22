@@ -297,7 +297,42 @@ export const rebirthShopDefs: RebirthShopDef[] = [
     maxLevel: 5, costs: [2, 3, 5, 8, 12],
     description: (l) => `+${l + 1}% Geld pro 10% Index`,
   },
+  {
+    key: 'discountUpgrade', name: 'Händler-Rabatt', emoji: '🏷️',
+    maxLevel: 3, costs: [3, 8, 15],
+    description: (l) => {
+      const slots = [4, 5, 5][l];
+      const maxDisc = [30, 40, 50][l];
+      return `Max ${slots} Pflanzen, bis zu ${maxDisc}% Rabatt`;
+    },
+  },
 ];
+
+// ─── Discount system ───
+export const DISCOUNT_DURATION = 10 * 60 * 1000; // 10 minutes
+
+export function getDiscountConfig(discountUpgradeLevel: number) {
+  const configs = [
+    { maxPlants: 3, minDiscount: 10, maxDiscount: 20 }, // base (no upgrade)
+    { maxPlants: 4, minDiscount: 15, maxDiscount: 30 },
+    { maxPlants: 5, minDiscount: 20, maxDiscount: 40 },
+    { maxPlants: 5, minDiscount: 20, maxDiscount: 50 },
+  ];
+  return configs[Math.min(discountUpgradeLevel, configs.length - 1)];
+}
+
+export function generateDiscounts(allPlantKeys: string[], discountUpgradeLevel: number): { plantKey: string; discountPercent: number }[] {
+  const config = getDiscountConfig(discountUpgradeLevel);
+  const shuffled = [...allPlantKeys].sort(() => Math.random() - 0.5);
+  const count = Math.min(config.maxPlants, shuffled.length);
+  return shuffled.slice(0, count).map(plantKey => ({
+    plantKey,
+    discountPercent: Math.floor(Math.random() * (config.maxDiscount - config.minDiscount + 1)) + config.minDiscount,
+  }));
+}
+
+// ─── Double Sell Event ───
+export const DOUBLE_SELL_DURATION = 5 * 60 * 1000; // 5 minutes
 
 // ─── Offline constants ───
 export const MAX_OFFLINE_HOURS = 8;

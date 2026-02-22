@@ -52,17 +52,35 @@ export interface EndlessStatDef {
   description: string;
   baseCost: number;
   costScale: number; // each level costs baseCost + level * costScale
+  maxLevel?: number; // optional hard cap
 }
 
 export const endlessStatDefs: EndlessStatDef[] = [
-  { key: 'speed', name: 'Geschwindigkeit', emoji: '⚡', description: 'Reduziert Wachstumszeit', baseCost: 1, costScale: 1 },
+  { key: 'speed', name: 'Geschwindigkeit', emoji: '⚡', description: 'Reduziert Wachstumszeit', baseCost: 1, costScale: 1, maxLevel: 36 },
   { key: 'harvest', name: 'Ernte-Multi', emoji: '💰', description: 'Erhöht Erntewert', baseCost: 1, costScale: 1 },
-  { key: 'variant', name: 'Varianten-Chance', emoji: '🎲', description: 'Mehr seltene Varianten', baseCost: 2, costScale: 1 },
-  { key: 'slots', name: 'Extra Slots', emoji: '📦', description: 'Mehr gleichzeitige Pflanzen', baseCost: 2, costScale: 2 },
+  { key: 'variant', name: 'Varianten-Chance', emoji: '🎲', description: 'Mehr seltene Varianten', baseCost: 2, costScale: 1, maxLevel: 50 },
+  { key: 'slots', name: 'Extra Slots', emoji: '📦', description: 'Mehr gleichzeitige Pflanzen', baseCost: 2, costScale: 2, maxLevel: 40 },
 ];
 
 export function getEndlessStatCost(def: EndlessStatDef, currentLevel: number): number {
   return def.baseCost + currentLevel * def.costScale;
+}
+
+export function isEndlessStatMaxed(def: EndlessStatDef, currentLevel: number): boolean {
+  if (def.maxLevel === undefined) return false;
+  return currentLevel >= def.maxLevel;
+}
+
+// === Max Seeds system ===
+export const BASE_MAX_SEEDS = 100;
+export const MAX_SEEDS_PER_LEVEL = 100; // +100 per upgrade level
+
+export function getMaxSeeds(level: number): number {
+  return BASE_MAX_SEEDS + level * MAX_SEEDS_PER_LEVEL;
+}
+
+export function getMaxSeedsCost(level: number): number {
+  return 2 + level * 2; // 2, 4, 6, 8, ...
 }
 
 // Apply endless stat boosts to base stats

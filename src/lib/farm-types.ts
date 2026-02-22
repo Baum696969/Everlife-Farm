@@ -47,6 +47,7 @@ export interface RebirthShopState {
   waterStrength: number;
   fieldStart: number;
   indexBonus: number;
+  discountUpgrade: number; // 0-3: more discount slots + higher discount range
 }
 
 export type AutoSellMode = 'off' | 'normal' | 'all' | 'gold+';
@@ -70,6 +71,7 @@ export interface SingleFarmerState {
   slots: FarmerSlot[];
   inventory: FarmerInventorySlot[]; // max 3 seed types queued
   autoReplant: boolean;
+  maxSeedsLevel: number; // upgrade level for max seeds capacity
 }
 
 // Legacy compat
@@ -82,6 +84,11 @@ export interface FarmerState {
 }
 
 export type MultiFarmerState = SingleFarmerState[];
+
+export interface DiscountState {
+  plants: { plantKey: string; discountPercent: number }[];
+  expiresAt: number; // timestamp when discounts expire
+}
 
 export interface GameState {
   money: number;
@@ -111,6 +118,9 @@ export interface GameState {
   // Update 5
   seenMilestones: string[]; // milestone keys already shown as popup
   disableMilestonePopups: boolean;
+  // Update 6 (v1.4)
+  doubleSellEventStart: number | null; // timestamp when 2x sell event started
+  activeDiscounts: DiscountState | null; // current active discounts
 }
 
 export interface HarvestResult {
