@@ -117,7 +117,7 @@ export default function FarmerPanel({
 
               {/* Farmer Inventory */}
               <div className="space-y-1.5">
-                <h3 className="text-xs font-bold">📦 Farmer-Inventar ({farmer.inventory.length}/3)</h3>
+                <h3 className="text-xs font-bold">📦 Farmer-Inventar ({farmer.inventory.length}/3 Typen, {farmer.inventory.reduce((s, i) => s + i.amount, 0)} Seeds)</h3>
                 {farmer.inventory.length === 0 ? (
                   <p className="text-xs text-muted-foreground text-center py-1">Leer – gib dem Farmer Seeds!</p>
                 ) : (
