@@ -13,8 +13,9 @@ import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { rebirthMilestones } from '@/lib/farm-milestones';
 import TutorialModal from '@/components/TutorialModal';
 import AbilitiesModal from '@/components/AbilitiesModal';
-import FarmerPanel, { getFarmerConfig, getFarmerUpgradeCost, type FarmerHarvestSummary } from '@/components/FarmerPanel';
-import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState, AutoSellMode, FarmerState, MusicTrack } from '@/lib/farm-types';
+import FarmerPanel, { type FarmerHarvestSummary } from '@/components/FarmerPanel';
+import { farmerDefs, getFarmerEffectiveStats, getMainLevelCost, endlessStatDefs, getEndlessStatCost, FARMER_MAIN_LEVELS } from '@/lib/farm-farmer';
+import type { Field, GameState, HarvestedInventory, SoundSettings, GameEvent as GEvent, WaterUpgradeState, RebirthShopState, AutoSellMode, FarmerState, SingleFarmerState, MultiFarmerState, MusicTrack } from '@/lib/farm-types';
 import {
   plants, rebirthPlants, getAllPlants, variants, variantKeys,
   eventTypes, pickRandomEvent, fieldPrices, getRebirthCost, getRebirthTokens,
@@ -43,6 +44,12 @@ const defaultSoundSettings: SoundSettings = {
 const defaultWaterUpgrades: WaterUpgradeState = { duration: 0, strength: 0, range: 0, cooldownReduction: 0 };
 const defaultRebirthShop: RebirthShopState = { offlineEfficiency: 0, variantChance: 0, eventBonus: 0, waterStrength: 0, fieldStart: 0, indexBonus: 0 };
 const defaultFarmer: FarmerState = { unlocked: false, level: 1, slots: [], inventory: [], autoReplant: true };
+const defaultSingleFarmer: SingleFarmerState = { unlocked: false, level: 1, endlessStats: {}, slots: [], inventory: [], autoReplant: true };
+const defaultFarmers: MultiFarmerState = [
+  { ...defaultSingleFarmer },
+  { ...defaultSingleFarmer },
+  { ...defaultSingleFarmer },
+];
 
 function createDefaultState(rebirthShop?: RebirthShopState, rebirths?: number, rebirthFieldsBought?: number): GameState {
   const startFields: Field[] = [];
@@ -77,6 +84,7 @@ function createDefaultState(rebirthShop?: RebirthShopState, rebirths?: number, r
     lastPlanted: {},
     tutorialCompleted: false,
     farmer: { ...defaultFarmer },
+    farmers: defaultFarmers.map(f => ({ ...f })),
     seenMilestones: [],
     disableMilestonePopups: false,
   };
@@ -295,13 +303,39 @@ export default function FarmGame() {
         // Update 5 migration
         if (!loaded.seenMilestones) loaded.seenMilestones = [];
         if (loaded.disableMilestonePopups === undefined) loaded.disableMilestonePopups = false;
-        // Farmer offline progress
-        if (loaded.farmer?.slots?.length > 0) {
-          loaded.farmer.slots = loaded.farmer.slots.map(slot => {
-            const elapsed = now - slot.startTime;
-            return { ...slot, done: elapsed >= slot.duration };
-          });
+        // Multi-farmer migration
+        if (!loaded.farmers || loaded.farmers.length < 3) {
+          loaded.farmers = defaultFarmers.map(f => ({ ...f }));
+          // Migrate old single farmer to farmer 0
+          if (loaded.farmer?.unlocked) {
+            loaded.farmers[0] = {
+              unlocked: true,
+              level: Math.min(loaded.farmer.level, FARMER_MAIN_LEVELS),
+              endlessStats: {},
+              slots: loaded.farmer.slots || [],
+              inventory: loaded.farmer.inventory || [],
+              autoReplant: loaded.farmer.autoReplant ?? true,
+            };
+          }
         }
+        // Ensure each farmer has endlessStats
+        loaded.farmers = loaded.farmers.map(f => ({
+          ...f,
+          endlessStats: f.endlessStats || {},
+        }));
+        // Farmer offline progress (all farmers)
+        loaded.farmers = loaded.farmers.map(farmer => {
+          if (farmer.slots?.length > 0) {
+            return {
+              ...farmer,
+              slots: farmer.slots.map(slot => {
+                const elapsed = now - slot.startTime;
+                return { ...slot, done: elapsed >= slot.duration };
+              }),
+            };
+          }
+          return farmer;
+        });
         loaded.lastUpdate = now;
         setGameState(loaded);
         
@@ -569,59 +603,62 @@ export default function FarmGame() {
     return () => clearInterval(interval);
   }, [gameState.autoWater, gameState.rebirths, gameState.fields, wateredFields, waterCooldowns]);
 
-  // === FARMER AUTO-REPLANT ===
-  const farmerRef = useRef(gameState.farmer);
-  useEffect(() => { farmerRef.current = gameState.farmer; }, [gameState.farmer]);
+  // === FARMER AUTO-REPLANT (multi-farmer) ===
+  const farmersRef = useRef(gameState.farmers);
+  useEffect(() => { farmersRef.current = gameState.farmers; }, [gameState.farmers]);
   const allPlantsRef = useRef(allPlants);
   useEffect(() => { allPlantsRef.current = allPlants; }, [allPlants]);
 
   useEffect(() => {
-    if (!gameState.farmer.unlocked || !gameState.farmer.autoReplant) return;
+    const anyActive = gameState.farmers.some(f => f.unlocked && f.autoReplant);
+    if (!anyActive) return;
 
     const interval = setInterval(() => {
-      const farmer = farmerRef.current;
-      if (!farmer.unlocked || !farmer.autoReplant) return;
-      if (farmer.inventory.length === 0) return;
-
-      const now = Date.now();
-      const config = getFarmerConfig(farmer.level);
-      const slotsLeft = config.slots - farmer.slots.length;
-      if (slotsLeft <= 0) return;
-
-      const seedSlot = farmer.inventory.find(s => s.amount > 0);
-      if (!seedSlot) return;
-
+      const farmers = farmersRef.current;
       const ap = allPlantsRef.current;
-      const plant = ap[seedSlot.plantKey];
-      if (!plant) return;
-
-      const cappedGrowTime = Math.min(plant.growTime, MAX_GROW_TIME);
-      const duration = cappedGrowTime * config.timeMult;
+      const now = Date.now();
 
       setGameState(prev => {
-        const invIdx = prev.farmer.inventory.findIndex(s => s.plantKey === seedSlot.plantKey && s.amount > 0);
-        if (invIdx < 0) return prev;
-        const cfg = getFarmerConfig(prev.farmer.level);
-        const left = cfg.slots - prev.farmer.slots.length;
-        if (left <= 0) return prev;
+        let changed = false;
+        const newFarmers = prev.farmers.map((farmer, fi) => {
+          if (!farmer.unlocked || !farmer.autoReplant) return farmer;
+          if (farmer.inventory.length === 0) return farmer;
 
-        const newInv = [...prev.farmer.inventory];
-        newInv[invIdx] = { ...newInv[invIdx], amount: newInv[invIdx].amount - 1 };
-        const filteredInv = newInv.filter(s => s.amount > 0);
+          const stats = getFarmerEffectiveStats(farmer.level, farmer.endlessStats);
+          const slotsLeft = stats.slots - farmer.slots.length;
+          if (slotsLeft <= 0) return farmer;
 
-        return {
-          ...prev,
-          farmer: {
-            ...prev.farmer,
+          const seedSlot = farmer.inventory.find(s => s.amount > 0);
+          if (!seedSlot) return farmer;
+
+          const plant = ap[seedSlot.plantKey];
+          if (!plant) return farmer;
+
+          const cappedGrowTime = Math.min(plant.growTime, MAX_GROW_TIME);
+          const duration = cappedGrowTime * stats.timeMult;
+
+          const invIdx = farmer.inventory.findIndex(s => s.plantKey === seedSlot.plantKey && s.amount > 0);
+          if (invIdx < 0) return farmer;
+
+          changed = true;
+          const newInv = [...farmer.inventory];
+          newInv[invIdx] = { ...newInv[invIdx], amount: newInv[invIdx].amount - 1 };
+          const filteredInv = newInv.filter(s => s.amount > 0);
+
+          return {
+            ...farmer,
             inventory: filteredInv,
-            slots: [...prev.farmer.slots, { plantKey: seedSlot.plantKey, startTime: now, duration, done: false }],
-          },
-        };
+            slots: [...farmer.slots, { plantKey: seedSlot.plantKey, startTime: now, duration, done: false }],
+          };
+        });
+
+        if (!changed) return prev;
+        return { ...prev, farmers: newFarmers };
       });
     }, 2000);
 
     return () => clearInterval(interval);
-  }, [gameState.farmer.unlocked, gameState.farmer.autoReplant]);
+  }, [gameState.farmers.map(f => `${f.unlocked}-${f.autoReplant}`).join(',')]);
 
 
   // Autosave every 10s
@@ -713,42 +750,66 @@ export default function FarmGame() {
     plantSeed(lastKey, fieldIndex);
   };
 
-  // === FARMER ACTIONS ===
-  const buyFarmer = () => {
-    if (gameState.rebirthTokens < 3) return;
+  // === FARMER ACTIONS (multi-farmer) ===
+  const buyFarmerById = (farmerId: number) => {
+    const def = farmerDefs[farmerId];
+    if (!def) return;
+    if (gameState.rebirthTokens < def.cost) return;
+    if (gameState.farmers[farmerId]?.unlocked) return;
     playSound('buy');
-    setGameState(prev => ({
-      ...prev,
-      rebirthTokens: prev.rebirthTokens - 3,
-      farmer: { unlocked: true, level: 1, slots: [], inventory: [], autoReplant: true },
-    }));
-    notify({ title: '👨‍🌾 Farmer eingestellt!' });
+    setGameState(prev => {
+      const newFarmers = [...prev.farmers];
+      newFarmers[farmerId] = { ...newFarmers[farmerId], unlocked: true, level: 1, endlessStats: {}, slots: [], inventory: [], autoReplant: true };
+      return { ...prev, rebirthTokens: prev.rebirthTokens - def.cost, farmers: newFarmers };
+    });
+    notify({ title: `${def.emoji} ${def.name} eingestellt!` });
     saveGame();
   };
 
-  const upgradeFarmer = () => {
-    const currentLevel = gameState.farmer.level;
-    if (currentLevel >= 9999) return;
-    const cost = getFarmerUpgradeCost(currentLevel);
+  const upgradeFarmerById = (farmerId: number) => {
+    const farmer = gameState.farmers[farmerId];
+    if (!farmer?.unlocked) return;
+    if (farmer.level >= FARMER_MAIN_LEVELS) return;
+    const cost = getMainLevelCost(farmer.level);
     if (gameState.rebirthTokens < cost) return;
     playSound('buy');
-    const nextLevel = currentLevel + 1;
-    setGameState(prev => ({
-      ...prev,
-      rebirthTokens: prev.rebirthTokens - cost,
-      farmer: { ...prev.farmer, level: nextLevel },
-    }));
-    notify({ title: `👨‍🌾 Farmer → Lv. ${nextLevel}!` });
+    setGameState(prev => {
+      const newFarmers = [...prev.farmers];
+      newFarmers[farmerId] = { ...newFarmers[farmerId], level: newFarmers[farmerId].level + 1 };
+      return { ...prev, rebirthTokens: prev.rebirthTokens - cost, farmers: newFarmers };
+    });
+    notify({ title: `${farmerDefs[farmerId].emoji} → Lv. ${farmer.level + 1}!` });
     saveGame();
   };
 
-  const giveSeedsToFarmer = (plantKey: string, amount: number) => {
+  const upgradeEndlessStat = (farmerId: number, statKey: string) => {
+    const farmer = gameState.farmers[farmerId];
+    if (!farmer?.unlocked || farmer.level < FARMER_MAIN_LEVELS) return;
+    const def = endlessStatDefs.find(d => d.key === statKey);
+    if (!def) return;
+    const currentLevel = farmer.endlessStats[statKey] || 0;
+    const cost = getEndlessStatCost(def, currentLevel);
+    if (gameState.rebirthTokens < cost) return;
+    playSound('buy');
+    setGameState(prev => {
+      const newFarmers = [...prev.farmers];
+      const f = { ...newFarmers[farmerId] };
+      f.endlessStats = { ...f.endlessStats, [statKey]: (f.endlessStats[statKey] || 0) + 1 };
+      newFarmers[farmerId] = f;
+      return { ...prev, rebirthTokens: prev.rebirthTokens - cost, farmers: newFarmers };
+    });
+    notify({ title: `${def.emoji} ${def.name} +1!` });
+    saveGame();
+  };
+
+  const giveSeedsToFarmer = (farmerId: number, plantKey: string, amount: number) => {
     const plant = allPlants[plantKey];
     if (!plant) return;
+    const farmer = gameState.farmers[farmerId];
+    if (!farmer?.unlocked) return;
     
-    // Check if farmer inventory is full (max 3 seed types)
-    const existingIdx = gameState.farmer.inventory.findIndex(s => s.plantKey === plantKey);
-    if (existingIdx < 0 && gameState.farmer.inventory.length >= 3) {
+    const existingIdx = farmer.inventory.findIndex(s => s.plantKey === plantKey);
+    if (existingIdx < 0 && farmer.inventory.length >= 3) {
       playSound('wrong');
       notify({ title: '❌ Farmer-Inventar voll (max 3 Seed-Typen)' });
       return;
@@ -763,25 +824,31 @@ export default function FarmGame() {
     playSound('plant');
 
     setGameState(prev => {
-      const newInv = [...prev.farmer.inventory];
+      const newFarmers = [...prev.farmers];
+      const f = { ...newFarmers[farmerId] };
+      const newInv = [...f.inventory];
       const eIdx = newInv.findIndex(s => s.plantKey === plantKey);
       if (eIdx >= 0) {
         newInv[eIdx] = { ...newInv[eIdx], amount: newInv[eIdx].amount + amount };
       } else {
         newInv.push({ plantKey, amount });
       }
+      f.inventory = newInv;
+      newFarmers[farmerId] = f;
       return {
         ...prev,
         inventory: { ...prev.inventory, [plantKey]: prev.inventory[plantKey] - amount },
-        farmer: { ...prev.farmer, inventory: newInv },
+        farmers: newFarmers,
       };
     });
-    notify({ title: `👨‍🌾 ${amount}× ${plant.name} übergeben!` });
+    notify({ title: `${farmerDefs[farmerId].emoji} ${amount}× ${plant.name} übergeben!` });
     saveGame();
   };
 
-  const collectFarmerSlot = (slotIndex: number) => {
-    const slot = gameState.farmer.slots[slotIndex];
+  const collectFarmerSlot = (farmerId: number, slotIndex: number) => {
+    const farmer = gameState.farmers[farmerId];
+    if (!farmer) return;
+    const slot = farmer.slots[slotIndex];
     if (!slot) return;
     const elapsed = Date.now() - slot.startTime;
     if (elapsed < slot.duration) return;
@@ -790,14 +857,14 @@ export default function FarmGame() {
     const plant = allPlants[slot.plantKey];
     if (!plant) return;
 
-    // Roll variants for farmer harvest
     const goldMult = getMilestoneGoldMult(gameState.rebirths);
-    const variantBonus = gameState.rebirthShop.variantChance + (goldMult > 1 ? 10 : 0);
+    const variantBonus = gameState.rebirthShop.variantChance + (goldMult > 1 ? 10 : 0) + (farmer.endlessStats.variant || 0) * 2;
     const variantResult = rollStackedVariants(slot.plantKey, plant, activeEvent, variantBonus);
     const storeKey = variantResult.length > 1 ? variantResult.join('+') : variantResult[0];
-    const value = calculateStackedValue(plant.value, variantResult, gameState.rebirths);
+    const stats = getFarmerEffectiveStats(farmer.level, farmer.endlessStats);
+    const baseValue = calculateStackedValue(plant.value, variantResult, gameState.rebirths);
+    const value = Math.round(baseValue * stats.harvestMult);
 
-    // Build summary item
     const summaryItem = {
       plantKey: slot.plantKey,
       plantName: plant.name,
@@ -807,7 +874,6 @@ export default function FarmGame() {
       value,
     };
 
-    // Show harvest summary
     setFarmerHarvestSummary(prev => {
       if (!prev) return { items: [summaryItem], totalValue: value };
       const existing = prev.items.find(i => i.plantKey === summaryItem.plantKey && i.variants === summaryItem.variants);
@@ -824,7 +890,6 @@ export default function FarmGame() {
       return { ...hi, [slot.plantKey]: plantHarvest };
     });
 
-    // Update discovered variants
     setGameState(prev => {
       const newDiscovered = { ...prev.discoveredVariants };
       if (!newDiscovered[slot.plantKey]) newDiscovered[slot.plantKey] = [];
@@ -833,27 +898,52 @@ export default function FarmGame() {
           newDiscovered[slot.plantKey] = [...newDiscovered[slot.plantKey], v];
         }
       });
-      const newSlots = prev.farmer.slots.filter((_, i) => i !== slotIndex);
-      return { ...prev, discoveredVariants: newDiscovered, farmer: { ...prev.farmer, slots: newSlots } };
+      const newFarmers = [...prev.farmers];
+      const f = { ...newFarmers[farmerId] };
+      f.slots = f.slots.filter((_, i) => i !== slotIndex);
+      newFarmers[farmerId] = f;
+      return { ...prev, discoveredVariants: newDiscovered, farmers: newFarmers };
     });
 
     saveGame();
   };
 
-  const collectAllFarmerSlots = () => {
+  const collectAllFromFarmer = (farmerId: number) => {
     const now = Date.now();
-    const doneIndices = gameState.farmer.slots
+    const farmer = gameState.farmers[farmerId];
+    if (!farmer) return;
+    const doneIndices = farmer.slots
       .map((s, i) => (now - s.startTime >= s.duration ? i : -1))
       .filter(i => i >= 0)
       .reverse();
-    setFarmerHarvestSummary(null); // Reset before batch
-    doneIndices.forEach(i => collectFarmerSlot(i));
+    setFarmerHarvestSummary(null);
+    doneIndices.forEach(i => collectFarmerSlot(farmerId, i));
+  };
+
+  const collectAllFarmers = () => {
+    setFarmerHarvestSummary(null);
+    const now = Date.now();
+    gameState.farmers.forEach((farmer, farmerId) => {
+      if (!farmer.unlocked) return;
+      const doneIndices = farmer.slots
+        .map((s, i) => (now - s.startTime >= s.duration ? i : -1))
+        .filter(i => i >= 0)
+        .reverse();
+      doneIndices.forEach(i => collectFarmerSlot(farmerId, i));
+    });
+  };
+
+  const toggleFarmerAutoReplant = (farmerId: number) => {
+    setGameState(prev => {
+      const newFarmers = [...prev.farmers];
+      newFarmers[farmerId] = { ...newFarmers[farmerId], autoReplant: !newFarmers[farmerId].autoReplant };
+      return { ...prev, farmers: newFarmers };
+    });
   };
 
   const sellFarmerHarvest = () => {
     if (!farmerHarvestSummary) return;
     playSound('sell');
-    // Remove from harvested inventory and add money
     let totalValue = 0;
     setHarvestedInventory(prev => {
       const next = { ...prev };
@@ -1042,6 +1132,7 @@ export default function FarmGame() {
     newState.autoWater = hasMilestone(newRebirths, 'autoWater') ? gameState.autoWater : false;
     // Preserve farmer & tutorial
     newState.farmer = gameState.farmer.unlocked ? { ...gameState.farmer, slots: [] } : { ...gameState.farmer };
+    newState.farmers = gameState.farmers.map(f => f.unlocked ? { ...f, slots: [] } : { ...f });
     newState.tutorialCompleted = gameState.tutorialCompleted;
     newState.lastPlanted = {}; // Reset last planted on rebirth
     // Preserve milestone popup state
@@ -1344,7 +1435,7 @@ export default function FarmGame() {
           { icon: '🛒', label: 'Händler', onClick: () => setShopModal(true) },
           { icon: '💧', label: 'Gießkanne', onClick: () => setWaterUpgradeModal(true) },
           { icon: '🌾', label: 'Ernte', onClick: () => setHarvestedModal(true), badge: totalHarvestedCount > 0 ? totalHarvestedCount : undefined },
-          { icon: '👨‍🌾', label: 'Farmer', onClick: () => setFarmerModal(true), badge: gameState.farmer.slots.filter(s => Date.now() - s.startTime >= s.duration).length > 0 ? gameState.farmer.slots.filter(s => Date.now() - s.startTime >= s.duration).length : undefined },
+          { icon: '👨‍🌾', label: 'Farmer', onClick: () => setFarmerModal(true), badge: gameState.farmers.reduce((sum, f) => sum + f.slots.filter(s => Date.now() - s.startTime >= s.duration).length, 0) || undefined },
           { icon: '🪙', label: 'R-Shop', onClick: () => setRebirthShopModal(true), badge: gameState.rebirthTokens > 0 ? gameState.rebirthTokens : undefined },
         ].map(({ icon, label, onClick, badge }) => (
           <Button key={label} variant="ghost" onClick={onClick}
@@ -1974,22 +2065,32 @@ export default function FarmGame() {
         onToggleAutoHarvest={(v) => setGameState(prev => ({ ...prev, autoHarvest: v }))}
         onSetAutoSell={(mode) => setGameState(prev => ({ ...prev, autoSell: mode }))}
         onToggleAutoWater={(v) => setGameState(prev => ({ ...prev, autoWater: v }))}
-        onToggleFarmerAutoReplant={() => setGameState(prev => ({ ...prev, farmer: { ...prev.farmer, autoReplant: !prev.farmer.autoReplant } }))}
+        onToggleFarmerAutoReplant={() => {
+          // Toggle auto-replant on all unlocked farmers
+          const anyOn = gameState.farmers.some(f => f.unlocked && f.autoReplant);
+          setGameState(prev => ({
+            ...prev,
+            farmer: { ...prev.farmer, autoReplant: !anyOn },
+            farmers: prev.farmers.map(f => f.unlocked ? { ...f, autoReplant: !anyOn } : f),
+          }));
+        }}
       />
 
       {/* Farmer Panel */}
       <FarmerPanel
         open={farmerModal}
         onOpenChange={setFarmerModal}
-        farmer={gameState.farmer}
+        farmers={gameState.farmers}
         gameState={gameState}
         allPlants={allPlants}
-        onBuyFarmer={buyFarmer}
-        onUpgradeFarmer={upgradeFarmer}
+        onBuyFarmer={buyFarmerById}
+        onUpgradeFarmer={upgradeFarmerById}
+        onUpgradeEndlessStat={upgradeEndlessStat}
         onGiveSeeds={giveSeedsToFarmer}
         onCollect={collectFarmerSlot}
-        onCollectAll={collectAllFarmerSlots}
-        onToggleAutoReplant={() => setGameState(prev => ({ ...prev, farmer: { ...prev.farmer, autoReplant: !prev.farmer.autoReplant } }))}
+        onCollectAllFromFarmer={collectAllFromFarmer}
+        onCollectAllFarmers={collectAllFarmers}
+        onToggleAutoReplant={toggleFarmerAutoReplant}
         formatTime={formatTime}
         harvestSummary={farmerHarvestSummary}
         onDismissSummary={() => setFarmerHarvestSummary(null)}

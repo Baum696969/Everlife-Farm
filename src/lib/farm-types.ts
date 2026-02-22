@@ -63,13 +63,25 @@ export interface FarmerInventorySlot {
   amount: number;
 }
 
-export interface FarmerState {
+export interface SingleFarmerState {
   unlocked: boolean;
-  level: number; // 1-9999
+  level: number; // 1-10 main levels
+  endlessStats: Record<string, number>; // endless stat boosts after level 10
   slots: FarmerSlot[];
   inventory: FarmerInventorySlot[]; // max 3 seed types queued
   autoReplant: boolean;
 }
+
+// Legacy compat
+export interface FarmerState {
+  unlocked: boolean;
+  level: number;
+  slots: FarmerSlot[];
+  inventory: FarmerInventorySlot[];
+  autoReplant: boolean;
+}
+
+export type MultiFarmerState = SingleFarmerState[];
 
 export interface GameState {
   money: number;
@@ -94,7 +106,8 @@ export interface GameState {
   // Update 4
   lastPlanted: Record<number, string>; // fieldIndex -> plantKey (for replant)
   tutorialCompleted: boolean;
-  farmer: FarmerState;
+  farmer: FarmerState; // legacy single farmer (kept for save compat)
+  farmers: MultiFarmerState; // new multi-farmer system
   // Update 5
   seenMilestones: string[]; // milestone keys already shown as popup
   disableMilestonePopups: boolean;
